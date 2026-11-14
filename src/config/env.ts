@@ -1,22 +1,8 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
 
-const AI_KEYS = [
-  'AI_PROVIDER',
-  'AI_API_KEY',
-  'AI_BASE_URL',
-  'AI_MODEL',
-  'AI_TIMEOUT_MS',
-] as const;
-
 export function loadBackendEnv(): void {
   applyFile(resolve(process.cwd(), '.env'));
-  const sibling = resolve(process.cwd(), '../astrodeepspacenasa/.env');
-  if (!existsSync(sibling)) return;
-  const parsed = parseEnv(readFileSync(sibling, 'utf8'));
-  for (const key of AI_KEYS) {
-    if (process.env[key] === undefined && parsed[key]) process.env[key] = parsed[key];
-  }
 }
 
 function applyFile(file: string): void {
