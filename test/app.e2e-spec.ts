@@ -23,7 +23,32 @@ describe('AppController (e2e)', () => {
       .expect('Hello World!');
   });
 
+  it('/api/ai/health (GET) informa si el modelo está configurado', () => {
+    return request(app.getHttpServer())
+      .get('/api/ai/health')
+      .expect(200)
+      .expect((response) => {
+        expect(response.body).toEqual(
+          expect.objectContaining({
+            configured: expect.any(Boolean),
+            provider: expect.any(String),
+            missing: expect.any(Array),
+          }),
+        );
+      });
+  });
+
+  it('/api/ai/space (POST) rechaza un contexto inválido', () => {
+    return request(app.getHttpServer())
+      .post('/api/ai/space')
+      .send({ textoPersona: 'hola' })
+      .expect(400)
+      .expect((response) => {
+        expect(response.body.code).toBe('invalid_request');
+      });
+  });
+
   afterEach(async () => {
-    await app.close();
+    await app?.close();
   });
 });
