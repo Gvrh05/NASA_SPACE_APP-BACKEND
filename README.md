@@ -1,6 +1,6 @@
-# AstroDeepSpace · VITALINK
+# AstroDeepSpace · HELIOS
 
-Backend oficial NestJS del prototipo de monitoreo de salud de astronautas. Recibe mediciones simuladas, compara evidencia con líneas base individuales, genera avisos y organiza seguimiento humano. Los datos, perfiles y protocolos son ficticios.
+Backend oficial NestJS de HELIOS (Health Evaluation & Life Indicators Observation System). Recibe mediciones simuladas, compara evidencia con líneas base individuales, genera avisos y organiza seguimiento humano. Incluye misión/etapas, preparación y Quirón Bot. Los datos, perfiles y protocolos son ficticios.
 
 ## Requisitos e instalación
 
@@ -39,7 +39,8 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 | AlertsModule | Consulta, reconocimiento y cambios de estado según rol simulado |
 | MedicalModule | Episodios, síntomas, análisis determinista y comunicaciones |
 | HistoryModule | Eventos biométricos, alertas, síntomas, análisis, comunicaciones, rechazos y auditoría |
-| AiModule | Servicios de IA existentes con esquemas y referencias verificadas |
+| NasaModule | Catálogo documental NASA y proxy de metadatos OSDR (OSD-288 / OSD-575) |
+| AiModule | Quirón Bot / servicios de IA con esquemas y referencias verificadas |
 
 El motor en src/simulation/domain proviene del dominio React. Los archivos conservados en React permiten ejecutar el simulador local cuando falta la API. Las pruebas de paridad comparan reglas y escenarios con el repositorio hermano, cuando está disponible. No se añadieron dependencias de ejecución.
 
@@ -47,7 +48,7 @@ El indicador observado conserva la regla previa basada en frecuencia cardíaca y
 
 ## Sesiones y persistencia
 
-Las rutas del dominio usan X-Simulation-Id con un UUID. POST /api/simulation crea una sesión con scenarioId o importa initialState versión 2 validado. Si la sesión existe, devuelve la copia persistida. Las respuestas del dominio incluyen simulated: true. El estado devuelve revision y state.
+Las rutas del dominio usan X-Simulation-Id con un UUID. POST /api/simulation crea una sesión con scenarioId o importa initialState versión 3 validado (`mission`, `prepItems`). Si la sesión existe, devuelve la copia persistida. Las respuestas del dominio incluyen simulated: true. El estado devuelve revision y state.
 
 Cada mutación usa requestId UUID y expectedRevision. Un reintento con el mismo identificador y contenido devuelve el estado actual sin ejecutar otra vez. Reutilizar el identificador con otro contenido o usar una revisión antigua produce 409. React serializa las acciones. Las validaciones estructurales devuelven 400 y las restricciones de rol del servidor devuelven 403. Algunas restricciones funcionales heredadas del reductor se reflejan en state.notice con tono err y conservan la operación de dominio sin aplicar, para mantener el comportamiento de la interfaz.
 
@@ -78,6 +79,10 @@ IndexedDB conserva la copia del navegador. Ante pérdida de API, React continúa
 | GET, POST | /api/medical/communications | Consultar o crear borradores |
 | POST | /api/medical/communications/:id/status | Avanzar comunicación |
 | GET | /api/history | Filtros crewId, from, to y type |
+| GET | /api/supabase/health | Estado de configuración y alcance de Supabase |
+| GET | /api/nasa/sources | Catálogo documental NASA + rangos EVA |
+| GET | /api/nasa/osdr/studies | Estudios OSDR demo (OSD-288, OSD-575) |
+| GET | /api/nasa/osdr/studies/:id | Metadatos OSDR en vivo (proxy) |
 | GET | /api/ai/health | Disponibilidad del proveedor |
 | POST | /api/ai/analyze | Análisis de contexto validado |
 | POST | /api/ai/chat | Consulta con pregunta obligatoria |

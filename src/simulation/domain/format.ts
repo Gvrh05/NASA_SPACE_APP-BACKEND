@@ -120,6 +120,8 @@ const AUDIT: Record<string, string> = {
   'register-symptom': 'Síntomas',
   'raise-space-alert': 'Contacto desde Mi espacio',
   'send-space-request': 'Solicitud desde Mi espacio',
+  'set-mission-stage': 'Etapa de misión',
+  'set-prep-status': 'Preparación',
   'repeat-measurement': 'Medición repetida',
   'reject-duplicate': 'Mensaje repetido',
   'reject-altered': 'Mensaje alterado',
