@@ -4,6 +4,8 @@ import { MonitoringModule } from './monitoring/monitoring.module';
 import { AlertsModule } from './alerts/alerts.module';
 import { MedicalModule } from './medical/medical.module';
 import { HistoryModule } from './history/history.module';
+import { NasaModule } from './nasa/nasa.module';
+import { SupabaseModule } from './supabase/supabase.module';
 import { Module } from '@nestjs/common';
 import { AiModule } from './ai/ai.module';
 import { AppController } from './app.controller';
@@ -18,6 +20,8 @@ import { AppService } from './app.service';
     AlertsModule,
     MedicalModule,
     HistoryModule,
+    NasaModule,
+    SupabaseModule,
   ],
   controllers: [AppController],
   providers: [AppService],
