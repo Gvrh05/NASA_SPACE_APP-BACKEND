@@ -1,4 +1,7 @@
+import { MISSION_STAGE_LABEL, PREP_STATUS_LABEL } from '../shared/mission'
+import { EVA_METABOLIC_BANDS } from '../shared/nasaSources'
 import { DEMO_PROTOCOLS } from '../shared/protocols'
+import { NASA_RISKS, RISK_CATEGORY_LABEL } from '../shared/risks'
 import type { AnalysisResult, AppState, Measurement } from '../shared/types'
 import { crewById } from './crew'
 import { integrityLabel, kindLabel } from './format'
@@ -6,9 +9,10 @@ import { djb2 } from './hash'
 import { crewPosture, latestReliable, measurementsFor } from './selectors'
 
 const LIMITATIONS = [
-  'Motor de análisis simulado. No es una evaluación clínica.',
+  'Quirón Bot · motor local de HELIOS. No es una evaluación clínica.',
   'No calcula una probabilidad ni confirma un diagnóstico.',
   'La disponibilidad de un recurso no indica que deba usarse.',
+  'Las referencias de NASA sirven de contexto científico, no como instrucción de tratamiento.',
 ]
 
 export function episodeFingerprint(state: AppState, episodeId: string): string {
@@ -46,6 +50,7 @@ export function runLocalAnalysis(state: AppState, episodeId: string): AnalysisRe
   ].filter(Boolean)
 
   const summary = [
+    `Etapa de misión: ${MISSION_STAGE_LABEL[state.mission.stage]}.`,
     posture.summary,
     symptoms.length ? `Autorreporte registrado: ${symptoms.flatMap((item) => item.symptoms).join(', ')}.` : 'No hay un autorreporte en este episodio.',
     'Hace falta revisión humana. Esto no es un diagnóstico.',
@@ -99,26 +104,43 @@ export function answerLocal(state: AppState, episodeId: string, question: string
   const resources = state.resources.filter((item) => item.quantity > 0)
   const alerts = state.alerts.filter((item) => item.episodeId === episodeId || item.crewId === episode.crewId)
   let summary = base.summary
-  if (normalized.includes('equipo') || normalized.includes('recurso') || normalized.includes('oxím') || normalized.includes('oxim')) {
+  if (normalized.includes('abord') || normalized.includes('prepar') || normalized.includes('preembar')) {
+    const pending = state.prepItems.filter((item) => item.status === 'propuesto' || item.status === 'pendiente_revision' || item.status === 'faltante')
+    summary = `Preembarque. ${pending.length} elemento(s) aún no listos: ${pending.map((item) => `${item.title} (${PREP_STATUS_LABEL[item.status]})`).join('; ') || 'ninguno'}. Quirón Bot propone categorías; el personal autorizado aprueba productos y cantidades.`
+  } else if (normalized.includes('aprob') || (normalized.includes('pendiente') && normalized.includes('recurso'))) {
+    const rows = state.prepItems.filter((item) => item.status === 'propuesto' || item.status === 'pendiente_revision')
+    summary = rows.length
+      ? `Pendientes de aprobación o revisión: ${rows.map((item) => item.title).join('; ')}.`
+      : 'No hay propuestas pendientes de revisión en la lista de preparación.'
+  } else if (normalized.includes('posmisi') || normalized.includes('regres') || normalized.includes('después')) {
+    const open = state.episodes.filter((item) => item.status !== 'closed')
+    summary = `Posmisión. Etapa actual: ${MISSION_STAGE_LABEL[state.mission.stage]}. Episodios aún abiertos: ${open.length}. Cambiar de etapa no cierra un seguimiento pendiente. Las decisiones de recuperación corresponden al personal autorizado.`
+  } else if (normalized.includes('riesgo') || normalized.includes('nasa') || normalized.includes('hrp')) {
+    summary = `Riesgos de referencia cargados: ${NASA_RISKS.slice(0, 4)
+      .map((item) => `${item.title} [${RISK_CATEGORY_LABEL[item.category]}]`)
+      .join('; ')}. Son fundamento científico; no se convierten en tratamiento automático.`
+  } else if (normalized.includes('metaból') || normalized.includes('metabol') || normalized.includes('eva') || normalized.includes('btu')) {
+    summary = `Esfuerzo EVA (literatura xEMU/NTRS): baja ≤${EVA_METABOLIC_BANDS.lowMax} BTU/hr, media hasta ${EVA_METABOLIC_BANDS.mediumMax}, diseño histórico ~${EVA_METABOLIC_BANDS.highDesignLimit}. La FC sola no basta. No hay telemetría de traje pública en este prototipo.`
+  } else if (normalized.includes('equipo') || normalized.includes('recurso') || normalized.includes('oxím') || normalized.includes('oxim') || normalized.includes('dónde')) {
     summary = resources.length
       ? `Equipo registrado: ${resources.map((item) => `${item.name} (${item.quantity} ${item.unitLabel}, ${item.location})`).join('; ')}. La disponibilidad no indica que deba usarse.`
       : 'No hay recursos con existencias en el inventario cargado.'
   } else if (normalized.includes('falta')) {
-    summary = base.missing.length ? `Falta confirmar: ${base.missing.join(' ')}` : 'El motor local no detecta un hueco adicional en los datos de este episodio.'
+    summary = base.missing.length ? `Falta confirmar: ${base.missing.join(' ')}` : 'Quirón Bot no detecta un hueco adicional en los datos de este episodio.'
   } else if (normalized.includes('alerta')) {
     summary = alerts.length
       ? `Alertas vinculadas: ${alerts.map((item) => `${item.title}. ${item.reason}`).join(' ')}`
       : 'No hay alertas abiertas vinculadas a este episodio.'
-  } else if (normalized.includes('resumen')) {
+  } else if (normalized.includes('resumen') || normalized.includes('especialista')) {
     const posture = crewPosture(state, episode.crewId)
-    summary = `Resumen para revisión humana. ${posture.summary} ${posture.evidenceDetail} Enlace: ${state.link}. No es una orientación médica cerrada.`
+    summary = `Resumen para revisión humana (${MISSION_STAGE_LABEL[state.mission.stage]}). ${posture.summary} ${posture.evidenceDetail} Enlace: ${state.link}. No es una orientación médica cerrada.`
   } else if (normalized.includes('cambi') || normalized.includes('medici')) {
     const hr = latestReliable(state, episode.crewId, 'heart_rate')
     summary = hr
       ? `Respecto a la línea base, la última frecuencia confiable es ${hr.value} ${hr.unit}. ${base.summary}`
       : `No hay una medición reciente confiable para comparar. ${base.summary}`
   }
-  return { ...base, summary }
+  return { ...base, summary, sources: [...base.sources, 'Quirón Bot · HELIOS'] }
 }
 
 export function analysisIsStale(state: AppState, fingerprint: string, episodeId: string): boolean {
