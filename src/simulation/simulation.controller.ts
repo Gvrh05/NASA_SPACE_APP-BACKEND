@@ -1,11 +1,7 @@
 import { Body, Controller, Get, Headers, Post } from '@nestjs/common';
-import { z } from 'zod';
 import { envelopeSchema, parse } from './contracts';
 import { SimulationService } from './simulation.service';
-
-export function session(value: unknown): string {
-  return parse(z.uuid(), value);
-}
+import { session } from './session';
 
 @Controller('api/simulation')
 export class SimulationController {

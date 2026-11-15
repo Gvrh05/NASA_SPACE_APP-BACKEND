@@ -4,7 +4,7 @@ import { buildSpaceMessages } from './contract';
 import type { ModelProvider, ResolvedProvider } from './provider';
 
 const space = {
-  crewId: 'elena-torres',
+  crewId: 'elena-torres' as const,
   crewName: 'Elena Torres',
   simulatedAt: 1,
   freshness: 'sin_datos_recientes' as const,

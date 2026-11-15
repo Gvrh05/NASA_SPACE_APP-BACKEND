@@ -276,6 +276,7 @@ export const stateSchema = z
           at,
           claimedValue: z.number().finite().nullable(),
           sensorId: id.nullable(),
+          crewId: crewId.optional(),
           detail: text,
         })
         .strict(),
@@ -398,6 +399,14 @@ export const actionSchema = z.discriminatedUnion('type', [
       subject: z.string().min(3).max(180),
       body: z.string().min(3).max(4000),
       idempotencyKey: id,
+    })
+    .strict(),
+  z
+    .object({
+      type: z.literal('updateCommunicationDraft'),
+      id,
+      subject: z.string().min(3).max(180),
+      body: z.string().min(3).max(4000),
     })
     .strict(),
   z

@@ -35,7 +35,7 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 |---|---|
 | SimulationModule | Sesiones, contratos Zod, revisiones, idempotencia y persistencia |
 | AstronautsModule | Perfiles ficticios, cinco líneas base y estado observado |
-| MonitoringModule | Recepción de paquetes, historial, frescura, integridad y comparaciones |
+| MonitoringModule | Ingesta y consulta de telemetría simulada: contrato de paquete, firma, orden, frescura, integridad y comparaciones |
 | AlertsModule | Consulta, reconocimiento y cambios de estado según rol simulado |
 | MedicalModule | Episodios, síntomas, análisis determinista y comunicaciones |
 | HistoryModule | Eventos biométricos, alertas, síntomas, análisis, comunicaciones, rechazos y auditoría |
@@ -44,7 +44,32 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 
 El motor en src/simulation/domain proviene del dominio React. Los archivos conservados en React permiten ejecutar el simulador local cuando falta la API. Las pruebas de paridad comparan reglas y escenarios con el repositorio hermano, cuando está disponible. No se añadieron dependencias de ejecución.
 
-El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 45 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable. Tres cifras idénticas del mismo sensor quedan pendientes de verificación.
+El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 30 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Una serie de tres valores idénticos del mismo sensor con marcas de tiempo distintas se marca como posible sensor congelado y se excluye de la lectura confiable. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable.
+
+## Telemetría simulada
+
+No hay sensores reales. Las mediciones biométricas de HELIOS las genera el propio simulador o un cliente de prueba; no provienen de wearables, de la ISS ni de ningún dispositivo físico.
+
+Los orígenes posibles de una lectura son cuatro, y todos son internos:
+
+| Origen | Qué produce | Dónde se genera |
+|---|---|---|
+| Escenario inicial | Lecturas históricas y de arranque (pulso, SpO₂, temperatura, respiración y descanso) | Motor de escenarios al crear la sesión |
+| Reloj de simulación | Lecturas nuevas minuto a minuto en los escenarios que las emiten | Avance del reloj simulado |
+| Medición manual | Una repetición local de frecuencia cardíaca, sin firma | Acción `repeatMeasurement` |
+| Cliente HTTP | Un paquete firmado del enlace simulado | `POST /api/monitoring/measurements` |
+
+El módulo de monitoreo es, por tanto, una **capa de ingesta, validación y consulta de telemetría simulada**, no una capa de recolección real. Existe para fijar un contrato único de entrada, modelar fallos (duplicados, alteraciones, desorden, retrasos y sensores congelados) y poder sustituir el origen en el futuro sin reescribir el dominio.
+
+Las cinco magnitudes son frecuencia cardíaca (lpm), saturación de oxígeno (%), temperatura (°C), frecuencia respiratoria (rpm) y horas de descanso (h). De cada lectura se conservan tripulante, sensor lógico, valor, unidad, momento de medición, momento de recepción, calidad de señal, contexto, secuencia y firma. A partir de ellos se derivan la integridad (válida, pendiente o antigua) y la validez de la firma.
+
+El rol astronauta solo puede leer sus propias mediciones, resumen y rechazos; los roles medical y ops pueden consultar a toda la tripulación. La ingesta también respeta la misma restricción de escritura.
+
+Los rechazos nuevos guardan el tripulante declarado, el sensor, el motivo y el valor reclamado. Sesiones creadas antes de este cambio pueden no tener ese dato en rechazos antiguos y quedan fuera del filtro por tripulante.
+
+La telemetría **no** alimenta el módulo NASA: DONKI, RadLab y OSDR son datos ambientales y documentales, independientes de las mediciones biométricas y de los avisos médicos.
+
+Los datos son sintéticos y clínicamente inertes. Ninguna lectura de esta capa constituye un diagnóstico ni una indicación de tratamiento.
 
 ## Sesiones y persistencia
 
@@ -64,8 +89,10 @@ IndexedDB conserva la copia del navegador. Ante pérdida de API, React continúa
 | POST | /api/simulation/actions | Acción del simulador con control de revisión |
 | GET | /api/astronauts | Tripulación y líneas base |
 | GET | /api/astronauts/:id | Perfil y estado observado |
-| GET | /api/monitoring/measurements | Historial con crewId y kind opcional |
+| GET | /api/monitoring/measurements | Historial con crewId, kind, from, to, integrity, limit y offset |
 | GET | /api/monitoring/latest | Última evidencia confiable y comparación, requiere crewId y kind |
+| GET | /api/monitoring/summary | Las cinco magnitudes confiables de un tripulante en una sola respuesta |
+| GET | /api/monitoring/rejections | Paquetes rechazados con motivo, sensor y valor declarado |
 | POST | /api/monitoring/measurements | Paquete firmado del simulador, simulated debe ser true |
 | GET | /api/alerts | Filtros crewId y status |
 | POST | /api/alerts/:id/acknowledge | Reconocer aviso |
@@ -90,6 +117,8 @@ IndexedDB conserva la copia del navegador. Ante pérdida de API, React continúa
 
 Las fechas son milisegundos Unix del reloj simulado. kind admite heart_rate, spo2, temperature, respiratory_rate y sleep_hours. Las unidades son lpm, %, °C, rpm y h. El contrato valida valores finitos no negativos y los límites propios de porcentajes y horas diarias. Las ventanas y líneas base corresponden a demostración.
 
+El historial y los rechazos aceptan limit (1–500, por defecto 200) y offset, y devuelven total para paginar. El historial también acepta from, to e integrity; los rechazos aceptan from, to y reason. Un intervalo invertido devuelve 400.
+
 History type admite measurement, alert, symptom, analysis, communication, audit y rejected. La auditoría conserva transiciones de comunicación. El filtro por astronauta relaciona eventos de auditoría con su entidad cuando puede identificarla.
 
 ## Ejemplos en PowerShell
@@ -110,6 +139,8 @@ $payload = @{
 $snapshot = Invoke-RestMethod -Method Post -Uri "$rootUrl/api/medical/symptoms" -Headers $headers -ContentType 'application/json' -Body $payload
 
 Invoke-RestMethod -Uri "$rootUrl/api/monitoring/latest?crewId=elena-torres&kind=heart_rate" -Headers $headers
+Invoke-RestMethod -Uri "$rootUrl/api/monitoring/summary?crewId=elena-torres" -Headers $headers
+Invoke-RestMethod -Uri "$rootUrl/api/monitoring/rejections?crewId=elena-torres&reason=altered" -Headers $headers
 Invoke-RestMethod -Uri "$rootUrl/api/history?crewId=elena-torres&type=symptom" -Headers $headers
 ```
 
@@ -143,8 +174,34 @@ pnpm test:e2e --runInBand
 
 Desde el frontend se ejecutan npm run build, npm test, npm run lint y npm run test:e2e. Para Playwright debe estar instalado Chromium mediante npx playwright install chromium.
 
-Jest prueba escenarios, paridad, validación, persistencia, firmas, duplicados, calidad, antigüedad, alertas, roles, comunicaciones, análisis sin proveedor y JSON de IA inválido. Playwright comprueba el recorrido previo, accesibilidad, persistencia real en NestJS y continuidad local al cortar la API. Los resultados de esta implementación se registran en docs/validation.md.
+Jest prueba escenarios, paridad, validación, persistencia, firmas, duplicados, calidad, antigüedad, alertas, roles, comunicaciones, análisis sin proveedor, JSON de IA inválido y la API de monitoreo (paginación, resumen, rechazos y permisos de lectura). Playwright comprueba el recorrido previo, accesibilidad, persistencia real en NestJS y continuidad local al cortar la API. Los resultados de esta implementación se registran en docs/validation.md.
 
 ## Recursos NASA
 
 Se consultaron Human Research Roadmap y las publicaciones oficiales de OSDR para documentar la relación científica del escenario de fatiga. Los datos de ejecución son sintéticos y no se importaron datasets NASA. La procedencia y el uso concreto están en [recursos científicos](docs/nasa-resources.md). La auditoría y las decisiones de migración están en [auditoría](docs/audit.md).
+
+## DONKI, RadLab y OSDR
+
+NASA environmental integration is separate from simulation and medical alerts. See [contracts, verified sources, configuration and tests](docs/NASA-INTEGRATION.md). Configure NASA_API_KEY exclusively in this backend.
+
+## Seguridad del prototipo
+
+Request limits, route-specific JSON limits, safe errors and minimal request logs are enabled by SecurityModule. AI responses remain advisory and cannot mutate sessions. See [controls, tests and limitations](docs/SECURITY.md) and [test results](docs/security-regression.json).
+
+### Editar comunicaciones en borrador
+
+`POST /api/simulation/actions` admite `action: { type: "updateCommunicationDraft", id, subject, body }` dentro del sobre existente con `requestId` y `expectedRevision`. Asunto: 3–180 caracteres; cuerpo: 3–4000. Se recortan espacios exteriores y no se acepta contenido que quede vacío o demasiado corto. Solo los roles simulados medical y ops pueden editar; el mensaje debe seguir en draft. Se mantienen identidad, destinatario, secuencia y fechas, y se añade un evento edit-communication-draft. Los reintentos conservan la idempotencia del sobre. No hay envío automático.
+
+Pruebas: `npm test -- --runInBand src/simulation/communication-draft.spec.ts`.
+
+## Mi espacio y Quir?n Bot
+
+Permisos de modelo ligados a la sesi?n simulada, memoria reciente acotada y cuatro herramientas de solo lectura. Ver [contratos, archivos, pruebas y l?mites de seguridad](docs/MI-ESPACIO.md).
+
+## Plan maestro implementado
+
+[Paridad, evidencia explicable, siete herramientas, demo guiada y controles de privacidad](docs/PLAN-IMPLEMENTADO.md).
+
+## Gemini en Quiron
+
+[Configuracion privada, firmas, verificacion de modelos y activacion](docs/GEMINI.md). El marcador de clave no activa el proveedor.

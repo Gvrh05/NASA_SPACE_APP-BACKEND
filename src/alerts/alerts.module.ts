@@ -11,7 +11,7 @@ import {
 import { z } from 'zod';
 import { SimulationModule } from '../simulation/simulation.module';
 import { SimulationService } from '../simulation/simulation.service';
-import { session } from '../simulation/simulation.controller';
+import { session } from '../simulation/session';
 import { crewId, mutationSchema, parse } from '../simulation/contracts';
 @Controller('api/alerts')
 export class AlertsController {

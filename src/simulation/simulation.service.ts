@@ -222,6 +222,7 @@ export class SimulationService {
     if (
       [
         'createCommunication',
+        'updateCommunicationDraft',
         'transitionCommunication',
         'deliverQueued',
         'confirmReceived',
@@ -233,6 +234,19 @@ export class SimulationService {
       state.role === 'astronaut'
     )
       throw new ForbiddenException('Se requiere rol médico u operaciones');
+    if (action.type === 'updateCommunicationDraft') {
+      const current = state.communications.find(
+        (item) => item.id === action.id,
+      );
+      if (!current) throw new NotFoundException('Communication not found');
+      if (current.status !== 'draft')
+        throw new ConflictException('Only drafts can be edited');
+      if (action.subject.trim().length < 3 || action.body.trim().length < 3) {
+        throw new BadRequestException(
+          'Subject and body must contain at least three non-padding characters',
+        );
+      }
+    }
     if (action.type === 'addSymptom' && state.role === 'ops')
       throw new ForbiddenException('Operaciones no puede registrar síntomas');
   }
