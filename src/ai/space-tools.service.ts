@@ -160,6 +160,17 @@ export class SpaceToolsService {
         stage: state.mission.stage,
         destination: state.mission.destination.slice(0, 120),
         link: state.link,
+        communications: {
+          queued: state.communications.filter((c) => c.status === 'queued')
+            .length,
+          sent: state.communications.filter((c) => c.status === 'sent').length,
+          received: state.communications.filter((c) => c.status === 'received')
+            .length,
+        },
+        linkHistory: state.audit
+          .filter((a) => a.action === 'set-link')
+          .slice(-6)
+          .map((a) => ({ at: a.at, action: a.action })),
       };
     const kind = name === 'getRecentSleep' ? 'sleep_hours' : 'heart_rate';
     const m = latestReliable(state, grant.crewId, kind);

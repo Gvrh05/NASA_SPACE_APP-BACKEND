@@ -1,3 +1,4 @@
+import { z } from 'zod';
 import type {
   ConversationInput,
   ConversationOutput,
@@ -56,7 +57,11 @@ export class AiService {
     }
     parsed.data.crewName = crewById(parsed.data.crewId).name;
     this.assertSize(parsed.data);
-    const text = await this.complete(buildModelMessages(parsed.data), signal);
+    const text = await this.complete(
+      buildModelMessages(parsed.data),
+      signal,
+      z.toJSONSchema(analysisResultSchema),
+    );
     const result = analysisResultSchema.safeParse(this.parseJson(text));
     if (!result.success)
       this.fail(
@@ -93,7 +98,11 @@ export class AiService {
       );
     parsed.data.crewName = crewById(parsed.data.crewId).name;
     this.assertSize(parsed.data);
-    const text = await this.complete(buildSpaceMessages(parsed.data), signal);
+    const text = await this.complete(
+      buildSpaceMessages(parsed.data),
+      signal,
+      z.toJSONSchema(spaceProposalSchema),
+    );
     const result = spaceProposalSchema.safeParse(this.parseJson(text));
     if (!result.success)
       this.fail(
@@ -129,9 +138,10 @@ export class AiService {
   private async complete(
     messages: { system: string; user: string },
     signal: AbortSignal,
+    jsonSchema?: Record<string, unknown>,
   ): Promise<string> {
     return this.withBudget(async (provider) => {
-      const text = await provider.complete({ ...messages, signal });
+      const text = await provider.complete({ ...messages, signal, jsonSchema });
       if (Buffer.byteLength(text, 'utf8') > 16000)
         this.fail(422, 'invalid_response', 'AI response exceeds allowed size');
       return text;
@@ -198,11 +208,15 @@ export class AiService {
         const status =
           error.code === 'rate_limit'
             ? 429
-            : error.code === 'invalid_response'
-              ? 422
-              : error.code === 'network'
+            : ['authentication', 'model_unavailable'].includes(error.code)
+              ? 503
+              : error.code === 'invalid_request'
                 ? 502
-                : 504;
+                : error.code === 'invalid_response'
+                  ? 422
+                  : error.code === 'network'
+                    ? 502
+                    : 504;
         this.fail(
           status,
           error.code,

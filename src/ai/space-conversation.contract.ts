@@ -70,11 +70,14 @@ export interface ToolCall {
   arguments: unknown;
 }
 export interface ToolExchange {
+  /** Opaque provider metadata; server memory only, never returned to clients. */
+  providerMessage?: Record<string, unknown>;
   text: string;
   calls: ToolCall[];
   results: { id: string; content: string }[];
 }
 export interface ConversationInput {
+  responseSchema?: Record<string, unknown>;
   system: string;
   user: string;
   history: HistoryMessage[];
@@ -83,6 +86,7 @@ export interface ConversationInput {
   signal: AbortSignal;
 }
 export interface ConversationOutput {
+  providerMessage?: Record<string, unknown>;
   text: string;
   calls: ToolCall[];
 }
