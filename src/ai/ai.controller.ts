@@ -47,7 +47,7 @@ export class AiController {
   }
 }
 
-function requestSignal(request: Request): AbortSignal {
+export function requestSignal(request: Request): AbortSignal {
   const controller = new AbortController();
   const abort = () => controller.abort();
   request.once('aborted', abort);

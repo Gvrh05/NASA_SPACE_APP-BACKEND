@@ -1,7 +1,8 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException, ConflictException } from '@nestjs/common'
 import { randomBytes } from 'node:crypto'
 import { computePrepPercent, nid } from './seed'
 import { PlatformStore } from './platform.store'
+import { localCareReply } from './quiron-local'
 import type {
   Appointment,
   Conversation,
@@ -603,8 +604,9 @@ export class PlatformService {
   }
 
   // --- Quirón conversations ---
-  startConversation(profile: Profile, missionId: string, mode: 'physical' | 'emotional') {
+  startConversation(profile: Profile, missionId: string, mode: 'physical' | 'emotional', locale: 'es' | 'en' = 'es') {
     this.requireMembership(profile, missionId)
+    if (!['physical', 'emotional'].includes(mode)) throw new BadRequestException('Invalid conversation mode')
     const now = Date.now()
     const conversation: Conversation = {
       id: nid(),
@@ -615,9 +617,9 @@ export class PlatformService {
       messages: [{
         role: 'assistant',
         at: now,
-        text: mode === 'physical'
-          ? 'Modo salud física (demo). Puedo explicar registros, faltantes y fuentes revisadas. No diagnostico.'
-          : 'Modo bienestar emocional (demo). Conversación privada por defecto. Podés pedir un resumen para compartir solo si lo aprobás.',
+        text: locale === 'en'
+          ? mode === 'physical' ? 'What would you like to talk about or understand about your physical wellbeing?' : 'This is your space to talk. Nothing is shared unless you explicitly approve it.'
+          : mode === 'physical' ? '\u00bfDe qu\u00e9 te gustar\u00eda hablar o qu\u00e9 quieres entender sobre tu bienestar f\u00edsico?' : 'Este es tu espacio para hablar. No se comparte nada sin tu aprobaci\u00f3n expl\u00edcita.',
       }],
       createdAt: now,
       updatedAt: now,
@@ -627,26 +629,40 @@ export class PlatformService {
   }
 
   postConversationMessage(profile: Profile, conversationId: string, text: string) {
-    const db = this.store.get()
-    const conversation = db.conversations.find((item) => item.id === conversationId)
-    if (!conversation || conversation.profileId !== profile.id) throw new ForbiddenException()
-    this.requireMembership(profile, conversation.missionId)
-    const now = Date.now()
-    const sources = db.evidenceSources.slice(0, 2)
-    const reply = this.composeQuironReply(conversation.mode, text, sources)
-    this.store.mutate((store) => {
-      const row = store.conversations.find((item) => item.id === conversationId)
-      if (!row) return
-      row.messages.push({ role: 'user', text, at: now })
-      row.messages.push({ role: 'assistant', text: reply, at: now + 1 })
-      row.updatedAt = now + 1
-    })
-    return this.store.get().conversations.find((item) => item.id === conversationId)
+    const conversation = this.ownedConversation(profile, conversationId)
+    return this.appendConversationTurn(profile, conversationId, text, {
+      text: localCareReply(text, conversation.messages, 'es'), source: 'local',
+    }, conversation.messages.length)
   }
 
-  approveSummary(profile: Profile, conversationId: string, body: string, shareWith: string | null) {
+  ownedConversation(profile: Profile, conversationId: string): Conversation {
     const conversation = this.store.get().conversations.find((item) => item.id === conversationId)
     if (!conversation || conversation.profileId !== profile.id) throw new ForbiddenException()
+    this.requireMembership(profile, conversation.missionId)
+    return structuredClone(conversation)
+  }
+
+  appendConversationTurn(profile: Profile, conversationId: string, text: string,
+    reply: Omit<Conversation['messages'][number], 'role' | 'at'>, expectedMessages: number) {
+    const conversation = this.ownedConversation(profile, conversationId)
+    if (conversation.messages.length !== expectedMessages) throw new ConflictException('Conversation changed; retry')
+    const now = Date.now()
+    this.store.mutate((db) => {
+      const row = db.conversations.find((item) => item.id === conversationId)!
+      row.messages.push({ role: 'user', text, at: now }, { ...reply, role: 'assistant', at: now + 1 })
+      row.updatedAt = now + 1
+    })
+    return this.ownedConversation(profile, conversationId)
+  }
+
+  approveSummary(profile: Profile, conversationId: string, body: string, shareWith: string | null, expectedMessages?: number) {
+    const conversation = this.ownedConversation(profile, conversationId)
+    if (!body.trim() || body.length > 2000) throw new BadRequestException('Invalid summary')
+    if (expectedMessages !== undefined && conversation.messages.length !== expectedMessages) throw new ConflictException('Conversation changed; regenerate the draft')
+    if (shareWith) {
+      const recipient = this.membership(shareWith, conversation.missionId)
+      if (!recipient || !['medic', 'psychologist'].includes(recipient.role)) throw new ForbiddenException('Choose an active medical or wellbeing professional')
+    }
     const summary = {
       id: nid(),
       conversationId,
@@ -667,6 +683,19 @@ export class PlatformService {
       })
     })
     return summary
+  }
+
+  listConversationSummaries(profile: Profile, missionId: string) {
+    this.requireMembership(profile, missionId)
+    const db = this.store.get()
+    const role = this.membership(profile.id, missionId)?.role
+    return db.conversationSummaries.flatMap(summary => {
+      const conversation = db.conversations.find(c => c.id === summary.conversationId && c.missionId === missionId)
+      if (!conversation || !summary.approved) return []
+      const owner = conversation.profileId === profile.id
+      const recipient = summary.shareWith === profile.id && ['medic', 'psychologist'].includes(role || '')
+      return owner || recipient ? [{ id: summary.id, body: summary.body, profileId: conversation.profileId, mode: conversation.mode, createdAt: summary.createdAt }] : []
+    })
   }
 
   // --- Urgent + appointments ---
@@ -794,13 +823,7 @@ export class PlatformService {
     })
   }
 
-  private composeQuironReply(mode: 'physical' | 'emotional', text: string, sources: { title: string; institution: string; url: string }[]) {
-    const cite = sources.map((source) => `• ${source.title} (${source.institution}) — ${source.url}`).join('\n')
-    if (mode === 'emotional') {
-      return `Te escucho. Esto es apoyo inicial de demostración, no terapia.\n\nSobre «${text.slice(0, 120)}»: podés anotar cómo te sentís y, si querés, preparar un resumen para un profesional humano. La conversación sigue privada hasta que apruebes compartir.\n\nFuentes de contexto (no diagnostican):\n${cite}\n\n[simulación] Separado de evidencia científica.`
-    }
-    return `Salud física (demo). No es diagnóstico.\n\nRespecto a «${text.slice(0, 120)}»: puedo señalar faltantes de registro y relacionar preguntas con fuentes revisadas.\n\nEvidencia / referencia:\n${cite}\n\n[regla de simulación] HELIOS no inventa datos si faltan.\n[limitación] Si no hay respaldo suficiente, hay que reconocerlo.`
-  }
+
 }
 
 function starterPrep(missionId: string, at: number, ownerId: string): PrepItem[] {

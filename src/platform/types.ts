@@ -154,7 +154,7 @@ export type Conversation = {
   profileId: string
   mode: 'physical' | 'emotional'
   private: boolean
-  messages: { role: 'user' | 'assistant'; text: string; at: number }[]
+  messages: { role: 'user' | 'assistant'; text: string; at: number; source?: 'model' | 'local'; model?: string; notice?: string; sources?: string[]; toolsUsed?: { name: string; status: string }[] }[]
   createdAt: number
   updatedAt: number
 }
