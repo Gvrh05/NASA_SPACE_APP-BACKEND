@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common'
 import { PlatformService } from './platform.service'
+import { careApprovalSchema, careStartSchema } from '../ai/care.contract'
+import { BadRequestException } from '@nestjs/common'
 import type { DemoRole, MissionStage } from './types'
 
 @Controller('api/platform')
@@ -182,22 +184,26 @@ export class PlatformController {
   }
 
   @Post('missions/:id/quiron')
-  quironStart(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Body() body?: { mode?: 'physical' | 'emotional' }) {
-    return this.platform.startConversation(this.profile(token), id || '', body?.mode || 'physical')
-  }
-
-  @Post('quiron/:conversationId/message')
-  quironMessage(@Headers('x-helios-session') token?: string, @Param('conversationId') conversationId?: string, @Body() body?: { text?: string }) {
-    return this.platform.postConversationMessage(this.profile(token), conversationId || '', body?.text || '')
+  quironStart(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Body() body?: unknown) {
+    const parsed = careStartSchema.safeParse(body ?? {})
+    if (!parsed.success) throw new BadRequestException('Invalid conversation mode')
+    return this.platform.startConversation(this.profile(token), id || '', parsed.data.mode, parsed.data.locale)
   }
 
   @Post('quiron/:conversationId/summary')
   quironSummary(
     @Headers('x-helios-session') token?: string,
     @Param('conversationId') conversationId?: string,
-    @Body() body?: { body?: string; shareWith?: string | null },
+    @Body() body?: { body?: string; shareWith?: string | null; expectedMessages?: number },
   ) {
-    return this.platform.approveSummary(this.profile(token), conversationId || '', body?.body || '', body?.shareWith ?? null)
+    const parsed = careApprovalSchema.safeParse(body)
+    if (!parsed.success) throw new BadRequestException('Invalid summary approval')
+    return this.platform.approveSummary(this.profile(token), conversationId || '', parsed.data.body, parsed.data.shareWith, parsed.data.expectedMessages)
+  }
+
+  @Get('missions/:id/quiron-summaries')
+  summaries(@Headers('x-helios-session') token: string, @Param('id') id: string) {
+    return { items: this.platform.listConversationSummaries(this.profile(token), id) }
   }
 
   @Post('missions/:id/urgent')

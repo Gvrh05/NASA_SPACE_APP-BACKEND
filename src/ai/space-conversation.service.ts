@@ -10,6 +10,13 @@ import {
 } from './space-conversation.contract';
 import { SPACE_SYSTEM_PROMPT, spaceProposalSchema } from './contract';
 import { extractJson } from './provider';
+export interface ConversationAccess {
+  assert(): void;
+  context(): unknown;
+  allowed(): ToolName[];
+  execute(name: string, args: unknown, signal: AbortSignal): unknown;
+}
+export type AuthorizedConversation = Pick<z.infer<typeof conversationSchema>, 'history' | 'locale' | 'textoPersona' | 'selectedLevel'>;
 @Injectable()
 export class SpaceConversationService {
   constructor(
@@ -50,6 +57,16 @@ export class SpaceConversationService {
       throw new HttpException('Access denied', 403);
     if (!grant.historyConsent && q.history.length)
       throw new HttpException('History consent required', 403);
+    return this.respondAuthorized(q, {
+      assert: () => { this.tools.authorize(sessionId, token); },
+      context: () => this.tools.context(sessionId, token),
+      allowed: () => this.tools.allowed(this.tools.authorize(sessionId, token)),
+      execute: (name, args, deadline) => this.tools.execute(sessionId, token, name, args, deadline),
+    }, signal);
+  }
+  /** Internal adapter: each caller binds tools and context to its own authorization. */
+  async respondAuthorized(q: AuthorizedConversation, access: ConversationAccess, signal: AbortSignal, system = SPACE_SYSTEM_PROMPT) {
+    access.assert();
     // Current user text is a separate message, never duplicated in history.
     const history = [...q.history];
     if (
@@ -59,8 +76,8 @@ export class SpaceConversationService {
       history.pop();
     if (Buffer.byteLength(JSON.stringify(history), 'utf8') > 16000)
       throw new BadRequestException();
-    const context = this.tools.context(sessionId, token);
-    const allowed = this.tools.allowed(grant);
+    const context = access.context();
+    const allowed = access.allowed();
     const requiredTool = requiredEvidenceTool(q.textoPersona, allowed);
     const exchanges: ToolExchange[] = [];
     const consulted: { name: string; status: string }[] = [];
@@ -69,10 +86,10 @@ export class SpaceConversationService {
     const deadline = AbortSignal.any([signal, AbortSignal.timeout(35000)]);
     for (let round = 0; round < 3; round++) {
       deadline.throwIfAborted();
-      this.tools.authorize(sessionId, token);
+      access.assert();
       const input: ConversationInput = {
         ...(round === 0 && requiredTool ? { requiredTool } : {}),
-        system: `${SPACE_SYSTEM_PROMPT}
+        system: `${system}
 SERVER AUTHORIZATION FOR THIS TURN: The following read-only tools are already authorized by the person's current consent: ${allowed.join(', ')}. Their presence confirms permission; do not claim a listed tool or its data category is disabled before trying it. If the question asks for an actual personal reading or current mission status, call the corresponding listed tool before answering or claiming that no data is available. If a category is not in this list, do not request it. When asked which human support options are available, consult getSupportOptions; never invent a support roster, volunteers, liaison officers or available facilities. General conversation and explanations need no tool.`,
         responseSchema: z.toJSONSchema(spaceProposalSchema),
         user: JSON.stringify({
@@ -114,7 +131,7 @@ SERVER AUTHORIZATION FOR THIS TURN: The following read-only tools are already au
       if (Buffer.byteLength(JSON.stringify(input), 'utf8') > 32000)
         throw new HttpException({ code: 'invalid_request' }, 413);
       const reply = await this.ai.conversationTurn(input);
-      this.tools.authorize(sessionId, token);
+      access.assert();
       deadline.throwIfAborted();
       if (round === 0 && requiredTool && !reply.calls.some((call) => call.name === requiredTool))
         throw new HttpException({ code: 'invalid_response' }, 422);
@@ -128,13 +145,7 @@ SERVER AUTHORIZATION FOR THIS TURN: The following read-only tools are already au
             throw new HttpException({ code: 'invalid_response' }, 422);
           seenCalls.add(call.id);
           try {
-            const value = this.tools.execute(
-              sessionId,
-              token,
-              call.name,
-              call.arguments,
-              deadline,
-            );
+            const value = access.execute(call.name, call.arguments, deadline);
             results.push({ id: call.id, content: JSON.stringify(value) });
             consulted.push({ name: call.name, status: 'ok' });
           } catch (error) {
