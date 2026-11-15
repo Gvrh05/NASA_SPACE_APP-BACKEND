@@ -1,7 +1,7 @@
 import { Controller, Get, Headers, Module, Param } from '@nestjs/common';
 import { SimulationModule } from '../simulation/simulation.module';
 import { SimulationService } from '../simulation/simulation.service';
-import { session } from '../simulation/simulation.controller';
+import { session } from '../simulation/session';
 import { crewId, parse } from '../simulation/contracts';
 import { CREW, crewById } from '../simulation/domain/crew';
 import { crewPosture } from '../simulation/domain/selectors';

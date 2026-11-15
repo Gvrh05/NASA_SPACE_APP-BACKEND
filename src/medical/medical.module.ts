@@ -12,7 +12,7 @@ import {
 import { z } from 'zod';
 import { SimulationModule } from '../simulation/simulation.module';
 import { SimulationService } from '../simulation/simulation.service';
-import { session } from '../simulation/simulation.controller';
+import { session } from '../simulation/session';
 import { crewId, id, mutationSchema, parse } from '../simulation/contracts';
 import { answerLocal, episodeFingerprint } from '../simulation/domain/analysis';
 import { DEMO_PROTOCOLS } from '../simulation/shared/protocols';
