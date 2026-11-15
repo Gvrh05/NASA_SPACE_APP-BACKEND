@@ -432,7 +432,7 @@ export class PlatformService implements OnModuleInit {
         } else if (item.status === 'cargado_verificado') {
           existing.verifiedBy = profile.id
           existing.verifiedAt = now
-        } else if (item.status && item.status !== 'cargado_verificado') {
+        } else if (item.status) {
           existing.verifiedBy = null
           existing.verifiedAt = null
         }
