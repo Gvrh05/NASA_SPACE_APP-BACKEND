@@ -78,11 +78,41 @@ describe('PlatformService', () => {
       intensity: 2,
       context: 'self',
       source: 'self_report',
+      bodyRegion: 'head',
     })
     expect(() => service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toThrow()
     const grant = service.grantHealth(mateo, created.mission.id, 'sofia-chen', ['symptoms', 'vitals'], null)
     expect(service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toHaveLength(1)
     service.revokeGrant(mateo, grant.id)
     expect(() => service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toThrow()
+  })
+
+  it('stores blood pressure as systolic/diastolic and lists vitals with grant', () => {
+    const mateo = service.requireSession(service.selectProfile('mateo-ruiz').token)
+    const sofia = service.requireSession(service.selectProfile('sofia-chen').token)
+    expect(() =>
+      service.addHealthIndicator(mateo, 'mission-helios-demo', { kind: 'blood_pressure', value: 120 }),
+    ).toThrow()
+    const bp = service.addHealthIndicator(mateo, 'mission-helios-demo', {
+      kind: 'blood_pressure',
+      value: 118,
+      valueSecondary: 76,
+      origin: 'manual',
+      context: 'rest',
+      quality: 'good',
+    })
+    expect(bp.value).toBe(118)
+    expect(bp.valueSecondary).toBe(76)
+    expect(bp.unit).toBe('mmHg')
+    const mood = service.addHealthIndicator(mateo, 'mission-helios-demo', {
+      kind: 'mood',
+      value: 2,
+      origin: 'manual',
+      context: 'post_wake',
+    })
+    expect(mood.unit).toBe('mood_1_5')
+    expect(() => service.listHealthIndicators(sofia, 'mission-helios-demo', 'mateo-ruiz')).toThrow()
+    service.grantHealth(mateo, 'mission-helios-demo', 'sofia-chen', ['vitals'], null)
+    expect(service.listHealthIndicators(sofia, 'mission-helios-demo', 'mateo-ruiz').length).toBeGreaterThanOrEqual(2)
   })
 })

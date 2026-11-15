@@ -45,6 +45,11 @@ export class AiController {
       requestSignal(request),
     );
   }
+
+  @Post('translate-donki')
+  translateDonki(@Body() body: unknown, @Req() request: Request) {
+    return this.ai.translateDonki(body, requestSignal(request));
+  }
 }
 
 export function requestSignal(request: Request): AbortSignal {

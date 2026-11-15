@@ -88,6 +88,59 @@ export class AiService {
     };
   }
 
+  async translateDonki(body: unknown, signal: AbortSignal) {
+    const parsed = z
+      .object({
+        id: z.string().min(1).max(200),
+        text: z.string().min(1).max(4000),
+        targetLang: z.literal('es').default('es'),
+      })
+      .safeParse(body);
+    if (!parsed.success)
+      this.fail(400, 'invalid_request', 'Texto DONKI inválido.');
+    if (!this.resolved.provider) {
+      return { unavailable: true as const, translation: null };
+    }
+    const schema = {
+      type: 'object',
+      additionalProperties: false,
+      required: ['translation'],
+      properties: { translation: { type: 'string' } },
+    };
+    const text = await this.complete(
+      {
+        system: [
+          'You translate NASA DONKI space-weather notes into Spanish.',
+          'Preserve numbers, dates, units, flare classes (e.g. C2.8), instrument names, identifiers, and uncertainty words (possible, probable, unknown source).',
+          'Do not add medical conclusions, exposure estimates, predictions, or advice.',
+          'Do not invent facts missing from the source. Return JSON only.',
+        ].join(' '),
+        user: JSON.stringify({
+          id: parsed.data.id,
+          sourceLang: 'en',
+          targetLang: parsed.data.targetLang,
+          text: parsed.data.text,
+        }),
+      },
+      signal,
+      schema,
+    );
+    const result = z
+      .object({ translation: z.string().min(1).max(8000) })
+      .safeParse(this.parseJson(text));
+    if (!result.success)
+      this.fail(
+        422,
+        'invalid_response',
+        'La traducción no cumple el esquema.',
+      );
+    return {
+      unavailable: false as const,
+      translation: result.data.translation.trim(),
+      model: this.resolved.model,
+    };
+  }
+
   async space(body: unknown, signal: AbortSignal) {
     const parsed = spaceContextSchema.safeParse(body);
     if (!parsed.success)

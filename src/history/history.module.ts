@@ -1,7 +1,7 @@
 import { Controller, Get, Headers, Module, Query } from '@nestjs/common';
 import { SimulationModule } from '../simulation/simulation.module';
 import { SimulationService } from '../simulation/simulation.service';
-import { session } from '../simulation/simulation.controller';
+import { session } from '../simulation/session';
 import { historyQuerySchema, parse } from '../simulation/contracts';
 import type { CrewId } from '../simulation/shared/types';
 @Controller('api/history')
@@ -65,7 +65,7 @@ export class HistoryController {
       ...state.rejected.map((data) => ({
         type: 'rejected',
         at: data.at,
-        crewId: owners.get(data.messageId) ?? null,
+        crewId: data.crewId ?? owners.get(data.messageId) ?? null,
         data,
       })),
     ]

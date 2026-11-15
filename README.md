@@ -14,6 +14,18 @@ pnpm start:dev
 
 El servidor escucha en http://127.0.0.1:3000. La IA es opcional. Para iniciar ambos proyectos desde el frontend se usa npm run dev, después de instalar las dependencias de ambos repositorios. npm run dev:api también inicia NestJS.
 
+## Despliegue
+
+El build y el arranque son pasos separados. En producción se ejecuta el JavaScript compilado en `dist/`, no el CLI de Nest.
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start        # node dist/main.js
+```
+
+Render usa `pnpm run build` como build command y `pnpm run start` como start command. `start:dev` queda reservado para desarrollo local, porque `nest start` compila con TypeScript dentro del mismo proceso y necesita más memoria que una instancia de 512 MB. El servidor escucha en `0.0.0.0` y en el puerto indicado por `PORT`.
+
 ## Configuración
 
 | Variable | Uso y valor por defecto |
@@ -35,7 +47,7 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 |---|---|
 | SimulationModule | Sesiones, contratos Zod, revisiones, idempotencia y persistencia |
 | AstronautsModule | Perfiles ficticios, cinco líneas base y estado observado |
-| MonitoringModule | Recepción de paquetes, historial, frescura, integridad y comparaciones |
+| MonitoringModule | Ingesta y consulta de telemetría simulada: contrato de paquete, firma, orden, frescura, integridad y comparaciones |
 | AlertsModule | Consulta, reconocimiento y cambios de estado según rol simulado |
 | MedicalModule | Episodios, síntomas, análisis determinista y comunicaciones |
 | HistoryModule | Eventos biométricos, alertas, síntomas, análisis, comunicaciones, rechazos y auditoría |
@@ -44,7 +56,32 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 
 El motor en src/simulation/domain proviene del dominio React. Los archivos conservados en React permiten ejecutar el simulador local cuando falta la API. Las pruebas de paridad comparan reglas y escenarios con el repositorio hermano, cuando está disponible. No se añadieron dependencias de ejecución.
 
-El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 45 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable. Tres cifras idénticas del mismo sensor quedan pendientes de verificación.
+El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 30 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Una serie de tres valores idénticos del mismo sensor con marcas de tiempo distintas se marca como posible sensor congelado y se excluye de la lectura confiable. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable.
+
+## Telemetría simulada
+
+No hay sensores reales. Las mediciones biométricas de HELIOS las genera el propio simulador o un cliente de prueba; no provienen de wearables, de la ISS ni de ningún dispositivo físico.
+
+Los orígenes posibles de una lectura son cuatro, y todos son internos:
+
+| Origen | Qué produce | Dónde se genera |
+|---|---|---|
+| Escenario inicial | Lecturas históricas y de arranque (pulso, SpO₂, temperatura, respiración y descanso) | Motor de escenarios al crear la sesión |
+| Reloj de simulación | Lecturas nuevas minuto a minuto en los escenarios que las emiten | Avance del reloj simulado |
+| Medición manual | Una repetición local de frecuencia cardíaca, sin firma | Acción `repeatMeasurement` |
+| Cliente HTTP | Un paquete firmado del enlace simulado | `POST /api/monitoring/measurements` |
+
+El módulo de monitoreo es, por tanto, una **capa de ingesta, validación y consulta de telemetría simulada**, no una capa de recolección real. Existe para fijar un contrato único de entrada, modelar fallos (duplicados, alteraciones, desorden, retrasos y sensores congelados) y poder sustituir el origen en el futuro sin reescribir el dominio.
+
+Las cinco magnitudes son frecuencia cardíaca (lpm), saturación de oxígeno (%), temperatura (°C), frecuencia respiratoria (rpm) y horas de descanso (h). De cada lectura se conservan tripulante, sensor lógico, valor, unidad, momento de medición, momento de recepción, calidad de señal, contexto, secuencia y firma. A partir de ellos se derivan la integridad (válida, pendiente o antigua) y la validez de la firma.
+
+El rol astronauta solo puede leer sus propias mediciones, resumen y rechazos; los roles medical y ops pueden consultar a toda la tripulación. La ingesta también respeta la misma restricción de escritura.
+
+Los rechazos nuevos guardan el tripulante declarado, el sensor, el motivo y el valor reclamado. Sesiones creadas antes de este cambio pueden no tener ese dato en rechazos antiguos y quedan fuera del filtro por tripulante.
+
+La telemetría **no** alimenta el módulo NASA: DONKI, RadLab y OSDR son datos ambientales y documentales, independientes de las mediciones biométricas y de los avisos médicos.
+
+Los datos son sintéticos y clínicamente inertes. Ninguna lectura de esta capa constituye un diagnóstico ni una indicación de tratamiento.
 
 ## Sesiones y persistencia
 
@@ -64,8 +101,10 @@ IndexedDB conserva la copia del navegador. Ante pérdida de API, React continúa
 | POST | /api/simulation/actions | Acción del simulador con control de revisión |
 | GET | /api/astronauts | Tripulación y líneas base |
 | GET | /api/astronauts/:id | Perfil y estado observado |
-| GET | /api/monitoring/measurements | Historial con crewId y kind opcional |
+| GET | /api/monitoring/measurements | Historial con crewId, kind, from, to, integrity, limit y offset |
 | GET | /api/monitoring/latest | Última evidencia confiable y comparación, requiere crewId y kind |
+| GET | /api/monitoring/summary | Las cinco magnitudes confiables de un tripulante en una sola respuesta |
+| GET | /api/monitoring/rejections | Paquetes rechazados con motivo, sensor y valor declarado |
 | POST | /api/monitoring/measurements | Paquete firmado del simulador, simulated debe ser true |
 | GET | /api/alerts | Filtros crewId y status |
 | POST | /api/alerts/:id/acknowledge | Reconocer aviso |
@@ -90,6 +129,8 @@ IndexedDB conserva la copia del navegador. Ante pérdida de API, React continúa
 
 Las fechas son milisegundos Unix del reloj simulado. kind admite heart_rate, spo2, temperature, respiratory_rate y sleep_hours. Las unidades son lpm, %, °C, rpm y h. El contrato valida valores finitos no negativos y los límites propios de porcentajes y horas diarias. Las ventanas y líneas base corresponden a demostración.
 
+El historial y los rechazos aceptan limit (1–500, por defecto 200) y offset, y devuelven total para paginar. El historial también acepta from, to e integrity; los rechazos aceptan from, to y reason. Un intervalo invertido devuelve 400.
+
 History type admite measurement, alert, symptom, analysis, communication, audit y rejected. La auditoría conserva transiciones de comunicación. El filtro por astronauta relaciona eventos de auditoría con su entidad cuando puede identificarla.
 
 ## Ejemplos en PowerShell
@@ -110,6 +151,8 @@ $payload = @{
 $snapshot = Invoke-RestMethod -Method Post -Uri "$rootUrl/api/medical/symptoms" -Headers $headers -ContentType 'application/json' -Body $payload
 
 Invoke-RestMethod -Uri "$rootUrl/api/monitoring/latest?crewId=elena-torres&kind=heart_rate" -Headers $headers
+Invoke-RestMethod -Uri "$rootUrl/api/monitoring/summary?crewId=elena-torres" -Headers $headers
+Invoke-RestMethod -Uri "$rootUrl/api/monitoring/rejections?crewId=elena-torres&reason=altered" -Headers $headers
 Invoke-RestMethod -Uri "$rootUrl/api/history?crewId=elena-torres&type=symptom" -Headers $headers
 ```
 
@@ -143,7 +186,7 @@ pnpm test:e2e --runInBand
 
 Desde el frontend se ejecutan npm run build, npm test, npm run lint y npm run test:e2e. Para Playwright debe estar instalado Chromium mediante npx playwright install chromium.
 
-Jest prueba escenarios, paridad, validación, persistencia, firmas, duplicados, calidad, antigüedad, alertas, roles, comunicaciones, análisis sin proveedor y JSON de IA inválido. Playwright comprueba el recorrido previo, accesibilidad, persistencia real en NestJS y continuidad local al cortar la API. Los resultados de esta implementación se registran en docs/validation.md.
+Jest prueba escenarios, paridad, validación, persistencia, firmas, duplicados, calidad, antigüedad, alertas, roles, comunicaciones, análisis sin proveedor, JSON de IA inválido y la API de monitoreo (paginación, resumen, rechazos y permisos de lectura). Playwright comprueba el recorrido previo, accesibilidad, persistencia real en NestJS y continuidad local al cortar la API. Los resultados de esta implementación se registran en docs/validation.md.
 
 ## Recursos NASA
 

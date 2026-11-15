@@ -1,6 +1,8 @@
-import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException, ConflictException } from '@nestjs/common'
+import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException, ConflictException, type OnModuleInit } from '@nestjs/common'
 import { randomBytes } from 'node:crypto'
-import { computePrepPercent, nid } from './seed'
+import { buildMissionPrepChecklist } from './prepPlan'
+import { computePrepPercent, isPrepItemComplete, nid } from './seed'
+import { type SimulatorMissionContext } from './missionLink'
 import { PlatformStore } from './platform.store'
 import { localCareReply } from './quiron-local'
 import type {
@@ -8,7 +10,9 @@ import type {
   Conversation,
   DemoRole,
   HealthGrant,
+  HealthIndicatorReading,
   Mission,
+  MissionEnvironment,
   MissionStage,
   PrepItem,
   PrepStatus,
@@ -20,9 +24,103 @@ import type {
 
 const SESSION_MS = 1000 * 60 * 60 * 12
 
+const INDICATOR_KINDS: HealthIndicatorReading['kind'][] = [
+  'heart_rate',
+  'blood_pressure',
+  'spo2',
+  'glucose',
+  'temperature',
+  'respiratory_rate',
+  'sleep_hours',
+  'mood',
+]
+
+function normalizeEnvironment(value?: string | null): MissionEnvironment {
+  const allowed: MissionEnvironment[] = ['spacecraft', 'space_station', 'rover', 'surface_base', 'training']
+  if (value && allowed.includes(value as MissionEnvironment)) return value as MissionEnvironment
+  return 'space_station'
+}
+
+function indicatorDefaults(kind: HealthIndicatorReading['kind']): {
+  unit: string
+  staleAfterMs: number
+  bodyRegion: string | null
+} {
+  switch (kind) {
+    case 'heart_rate':
+      return { unit: 'bpm', staleAfterMs: 6 * 60 * 60 * 1000, bodyRegion: 'chest' }
+    case 'blood_pressure':
+      return { unit: 'mmHg', staleAfterMs: 12 * 60 * 60 * 1000, bodyRegion: 'arm' }
+    case 'spo2':
+      return { unit: '%', staleAfterMs: 6 * 60 * 60 * 1000, bodyRegion: 'hand' }
+    case 'glucose':
+      return { unit: 'mg/dL', staleAfterMs: 12 * 60 * 60 * 1000, bodyRegion: null }
+    case 'temperature':
+      return { unit: '°C', staleAfterMs: 12 * 60 * 60 * 1000, bodyRegion: null }
+    case 'respiratory_rate':
+      return { unit: 'rpm', staleAfterMs: 6 * 60 * 60 * 1000, bodyRegion: 'chest' }
+    case 'sleep_hours':
+      return { unit: 'h', staleAfterMs: 24 * 60 * 60 * 1000, bodyRegion: null }
+    case 'mood':
+      return { unit: 'mood_1_5', staleAfterMs: 24 * 60 * 60 * 1000, bodyRegion: null }
+    default:
+      return { unit: 'u', staleAfterMs: 24 * 60 * 60 * 1000, bodyRegion: null }
+  }
+}
+
 @Injectable()
-export class PlatformService {
+export class PlatformService implements OnModuleInit {
   private store = new PlatformStore()
+
+  async onModuleInit() {
+    await this.store.hydrateRemote()
+  }
+
+  storageStatus() {
+    return this.store.status()
+  }
+
+  restoreDamaged(profile: Profile, name: string) {
+    if (profile.demoRole !== 'chief') throw new ForbiddenException('Solo la jefatura puede restaurar la base')
+    try {
+      this.store.restoreDamaged(name)
+    } catch (error) {
+      throw new BadRequestException(error instanceof Error ? error.message : 'No se pudo restaurar')
+    }
+    return this.store.status()
+  }
+
+  simulatorContext(profile: Profile, missionId: string): SimulatorMissionContext {
+    this.requireMembership(profile, missionId)
+    const mission = this.store.get().missions.find((item) => item.id === missionId)
+    if (!mission) throw new NotFoundException('Misión no encontrada')
+    const crewCount = this.store.get().memberships.filter(
+      (item) => item.missionId === missionId && item.status === 'active' && item.role !== 'ops',
+    ).length
+    return {
+      id: mission.id,
+      name: mission.name,
+      destination: mission.destination,
+      stage: mission.stage,
+      durationDays: Math.max(1, mission.durationDays || 1),
+      crewCount: Math.max(1, crewCount || mission.plannedCrewCount || 1),
+      activities: (mission.activities || []).slice(0, 40),
+    }
+  }
+
+  longitudinalUserLines(conversation: Conversation): string[] {
+    const lines: string[] = []
+    for (const other of this.store.get().conversations) {
+      if (other.id === conversation.id || other.profileId !== conversation.profileId) continue
+      if (other.missionId !== conversation.missionId || other.mode !== conversation.mode) continue
+      for (const message of other.messages) {
+        if (message.role !== 'user') continue
+        const text = message.text.replace(/\s+/g, ' ').trim().slice(0, 180)
+        if (text) lines.push(text)
+      }
+    }
+    return lines.slice(-6)
+  }
 
   listProfiles(): Profile[] {
     return this.store.get().profiles
@@ -74,6 +172,7 @@ export class PlatformService {
   createMission(profile: Profile, input: {
     name: string
     destination?: string
+    environment?: Mission['environment']
     plannedStart?: string | null
     durationDays?: number
     plannedCrewCount?: number
@@ -85,11 +184,13 @@ export class PlatformService {
     const now = Date.now()
     const id = `mission-${nid()}`
     const code = `H-${nid().slice(0, 6).toUpperCase()}`
+    const environment = normalizeEnvironment(input.environment)
     const mission: Mission = {
       id,
       code,
       name: input.name.trim() || 'Nueva misión',
       destination: input.destination?.trim() || '',
+      environment,
       stage: 'draft',
       plannedStart: input.plannedStart ?? null,
       durationDays: input.durationDays ?? 30,
@@ -100,6 +201,7 @@ export class PlatformService {
       storageNotes: input.storageNotes ?? '',
       prepPercent: 0,
       rosterLocked: false,
+      analysisStale: true,
       createdBy: profile.id,
       createdAt: now,
       updatedAt: now,
@@ -108,11 +210,46 @@ export class PlatformService {
       db.missions.push(mission)
       db.memberships.push({ id: nid(), missionId: id, profileId: profile.id, role: 'chief', status: 'active', createdAt: now })
       db.invitations.push({ id: nid(), missionId: id, code, invitedRole: 'crew', requestedBy: null, status: 'open', createdAt: now })
-      db.prepItems.push(...starterPrep(id, now, profile.id))
+      db.prepItems.push(
+        ...starterPrep(
+          id,
+          now,
+          profile.id,
+          mission.plannedCrewCount,
+          mission.durationDays,
+        ),
+      )
       mission.prepPercent = computePrepPercent(db.prepItems.filter((item) => item.missionId === id))
       db.accessAudit.push({ id: nid(), missionId: id, actorProfileId: profile.id, action: 'mission-create', detail: mission.name, createdAt: now })
     })
     return this.getMission(profile, id)
+  }
+
+  private crewAddsBlocked(mission: Mission): string | null {
+    if (mission.stage === 'aboard' || mission.stage === 'postmission' || mission.stage === 'archived' || mission.stage === 'cancelled') {
+      return 'La misión ya desplegó. No se pueden agregar más astronautas.'
+    }
+    if (mission.rosterLocked) {
+      return 'La tripulación está bloqueada. No se pueden agregar personas.'
+    }
+    return null
+  }
+
+  /** Checklist solo en borrador/preembarque. Tras despegue queda cerrado a la fuerza. */
+  private assertChecklistOpen(mission: Mission) {
+    if (mission.stage === 'draft' || mission.stage === 'preflight') return
+    throw new BadRequestException(
+      'Checklist cerrado: la misión ya desplegó o está en posmisión. No se puede volver a editar ni reabrir el paso de preparación.',
+    )
+  }
+
+  private isDeployedStage(stage: MissionStage) {
+    return (
+      stage === 'aboard' ||
+      stage === 'postmission' ||
+      stage === 'archived' ||
+      stage === 'cancelled'
+    )
   }
 
   requestJoin(profile: Profile, code: string, requestedRole: Exclude<DemoRole, 'chief'> = 'crew') {
@@ -121,9 +258,8 @@ export class PlatformService {
     const db = this.store.get()
     const mission = db.missions.find((item) => item.code.toUpperCase() === normalized)
     if (!mission) throw new NotFoundException('No hay misión con ese código. El código no revela datos de salud.')
-    if (mission.rosterLocked) {
-      throw new BadRequestException('La tripulación quedó bloqueada al guardar el checklist de IA. No se pueden agregar personas.')
-    }
+    const blocked = this.crewAddsBlocked(mission)
+    if (blocked) throw new BadRequestException(blocked)
     const existing = db.memberships.find((item) => item.missionId === mission.id && item.profileId === profile.id)
     if (existing?.status === 'active') {
       return { missionId: mission.id, status: 'already_member' as const, membershipId: existing.id }
@@ -176,14 +312,20 @@ export class PlatformService {
     this.requireRole(chief, missionId, ['chief'])
     const mission = this.store.get().missions.find((item) => item.id === missionId)
     if (!mission) throw new NotFoundException('Misión no encontrada')
-    if (accept && mission.rosterLocked) {
-      throw new BadRequestException('La tripulación está bloqueada. No se pueden aceptar nuevos integrantes.')
+    if (accept) {
+      const blocked = this.crewAddsBlocked(mission)
+      if (blocked) throw new BadRequestException(blocked)
     }
     const now = Date.now()
     this.store.mutate((db) => {
+      const current = db.missions.find((item) => item.id === missionId)
       const membership = db.memberships.find((item) => item.id === membershipId && item.missionId === missionId)
       if (!membership) throw new NotFoundException('Solicitud no encontrada')
       membership.status = accept ? 'active' : 'left'
+      if (accept && current && (current.stage === 'draft' || current.stage === 'preflight')) {
+        current.analysisStale = true
+        current.updatedAt = now
+      }
       db.accessAudit.push({
         id: nid(),
         missionId,
@@ -204,18 +346,40 @@ export class PlatformService {
       if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
         throw new BadRequestException('Solo se editan datos generales en borrador o preembarque')
       }
+      const nextDays = patch.durationDays ?? mission.durationDays
+      const nextCrew = patch.plannedCrewCount ?? mission.plannedCrewCount
+      const planChanged = nextDays !== mission.durationDays || nextCrew !== mission.plannedCrewCount
+      const now = Date.now()
       Object.assign(mission, {
         name: patch.name ?? mission.name,
         destination: patch.destination ?? mission.destination,
+        environment: patch.environment ? normalizeEnvironment(patch.environment) : mission.environment,
         plannedStart: patch.plannedStart ?? mission.plannedStart,
-        durationDays: patch.durationDays ?? mission.durationDays,
-        plannedCrewCount: patch.plannedCrewCount ?? mission.plannedCrewCount,
+        durationDays: nextDays,
+        plannedCrewCount: nextCrew,
         timezone: patch.timezone ?? mission.timezone,
         activities: patch.activities ?? mission.activities,
         commsNotes: patch.commsNotes ?? mission.commsNotes,
         storageNotes: patch.storageNotes ?? mission.storageNotes,
-        updatedAt: Date.now(),
+        analysisStale: planChanged ? true : mission.analysisStale,
+        updatedAt: now,
       })
+      // Si cambian días/personas: se mantiene lo que “tengo”, pero se desmarca verificación
+      // (el % baja solo si el requerido sube y ya no alcanza).
+      if (planChanged) {
+        for (const item of db.prepItems) {
+          if (item.missionId !== missionId) continue
+          if (item.qtyRequired == null) continue
+          if (item.status !== 'cargado_verificado') continue
+          item.status = 'pendiente_revision'
+          item.verifiedBy = null
+          item.verifiedAt = null
+          item.updatedAt = now
+        }
+        mission.prepPercent = computePrepPercent(
+          db.prepItems.filter((row) => row.missionId === missionId),
+        )
+      }
     })
     return this.getMission(profile, missionId)
   }
@@ -228,6 +392,9 @@ export class PlatformService {
 
   upsertPrep(profile: Profile, missionId: string, item: Partial<PrepItem> & { id?: string; title: string; category: string }) {
     this.requireRole(profile, missionId, ['chief', 'ops', 'medic'])
+    const missionGate = this.store.get().missions.find((row) => row.id === missionId)
+    if (!missionGate) throw new NotFoundException('Misión no encontrada')
+    this.assertChecklistOpen(missionGate)
     const now = Date.now()
     return this.store.mutate((db) => {
       const existing = item.id ? db.prepItems.find((row) => row.id === item.id && row.missionId === missionId) : undefined
@@ -247,9 +414,27 @@ export class PlatformService {
           qtyAvailable: item.qtyAvailable ?? existing.qtyAvailable,
           updatedAt: now,
         })
-        if (item.status === 'cargado_verificado') {
+        if (item.qtyAvailable !== undefined) {
+          existing.qtyAvailable = item.qtyAvailable
+        }
+        if (existing.qtyRequired != null && existing.qtyRequired > 0) {
+          const have = Math.max(0, Number(existing.qtyAvailable ?? 0))
+          if (have >= existing.qtyRequired) {
+            existing.status = 'cargado_verificado'
+            existing.qtyAvailable = existing.qtyRequired
+            existing.verifiedBy = profile.id
+            existing.verifiedAt = now
+          } else {
+            existing.status = 'pendiente_revision'
+            existing.verifiedBy = null
+            existing.verifiedAt = null
+          }
+        } else if (item.status === 'cargado_verificado') {
           existing.verifiedBy = profile.id
           existing.verifiedAt = now
+        } else if (item.status) {
+          existing.verifiedBy = null
+          existing.verifiedAt = null
         }
       } else {
         db.prepItems.push({
@@ -287,60 +472,42 @@ export class PlatformService {
     if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
       throw new BadRequestException('El análisis de IA de checklist solo está disponible antes del despliegue (borrador o preembarque).')
     }
-    const suggestions = [
-      {
-        title: 'Cobertura de monitoreo reutilizable',
-        category: 'monitoreo',
-        reason: 'Duración y personas requieren cobertura, no multiplicar por día.',
-        source: 'Inventario HELIOS / HRP Evidence (contexto)',
-        qty: Math.max(2, Math.ceil(mission.plannedCrewCount / 2)),
-        assumptions: 'Equipos compartidos con redundancia mínima.',
-      },
-      {
-        title: 'Consumibles de higiene',
-        category: 'higiene',
-        reason: 'Estimación logística revisable.',
-        source: 'Regla HELIOS: personas × días + reserva 10%',
-        qty: Math.ceil(mission.plannedCrewCount * mission.durationDays * 1.1),
-        assumptions: 'Tasa demo; pendiente de validación operativa.',
-      },
-      {
-        title: 'Canal de asistencia y demora',
-        category: 'comunicacion',
-        reason: 'Características de comunicación de la misión.',
-        source: 'Medical Operations 6.0 (referencia)',
-        qty: null,
-        assumptions: 'No implica chat clínico en vivo.',
-      },
-      {
-        title: 'Kit de primeros auxilios revisado',
-        category: 'medico',
-        reason: 'Checklist de recursos médicos mínimos antes del despliegue.',
-        source: 'Preparación HELIOS / inventario de la nave',
-        qty: 1,
-        assumptions: 'No sustituye evaluación clínica real.',
-      },
-    ]
+    const plan = buildMissionPrepChecklist(
+      mission.plannedCrewCount,
+      mission.durationDays,
+    )
+    const suggestions = plan.map((item) => ({
+      key: item.key,
+      title: item.title,
+      category: item.category,
+      reason: item.description,
+      source: item.source,
+      qty: item.qtyRequired,
+      qtyLabel: item.qtyLabel,
+      critical: item.critical,
+      assumptions: item.qtyLabel
+        ? `Cantidad planificada: ${item.qtyLabel}.`
+        : 'Sin cantidad numérica; verificar procedimiento.',
+    }))
     return {
       missionId,
-      note: 'Recomendaciones de planificación HELIOS. No son obligaciones NASA ni tratamientos.',
+      note: 'Checklist HELIOS según personas y días del plan. No son obligaciones NASA ni tratamientos.',
       rosterLocked: Boolean(mission.rosterLocked),
+      analysisStale: Boolean(mission.analysisStale),
       stage: mission.stage,
-      warning: 'Si guardás este checklist de IA, la tripulación queda bloqueada: no podrás cambiar tripulantes ni agregar nuevos.',
+      warning:
+        'Si cambiás personas, días o tripulación después de analizar, tenés que volver a analizar antes de despegar. Podés marcar ítems en cualquier momento; el despliegue exige análisis al día y 80%+. Al despegar ya no se pueden agregar astronautas.',
       suggestions,
     }
   }
 
-  /** Saves AI suggestions into the prep checklist and freezes the crew roster. */
+  /** Rebuilds checklist quantities from the plan and clears analysisStale. */
   commitAiPrep(profile: Profile, missionId: string, titles?: string[]) {
     this.requireRole(profile, missionId, ['chief', 'ops'])
     const mission = this.store.get().missions.find((item) => item.id === missionId)
     if (!mission) throw new NotFoundException('Misión no encontrada')
     if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
-      throw new BadRequestException('Solo se puede guardar el checklist de IA antes del despliegue.')
-    }
-    if (mission.rosterLocked) {
-      throw new BadRequestException('El checklist de IA ya está guardado y la tripulación está bloqueada.')
+      throw new BadRequestException('Solo se puede analizar antes del despliegue.')
     }
     const { suggestions, note, warning } = this.suggestPrep(profile, missionId)
     const selected = titles?.length
@@ -351,11 +518,45 @@ export class PlatformService {
     this.store.mutate((db) => {
       const current = db.missions.find((item) => item.id === missionId)
       if (!current) throw new NotFoundException('Misión no encontrada')
+      const keepIds = new Set<string>()
       for (const item of selected) {
-        const exists = db.prepItems.some((row) => row.missionId === missionId && row.title === item.title)
-        if (exists) continue
+        const stableId = `${missionId}-plan-${item.key}`
+        const existing =
+          db.prepItems.find((row) => row.id === stableId) ||
+          db.prepItems.find(
+            (row) => row.missionId === missionId && row.title === item.title,
+          )
+        if (existing) {
+          const prevQty = existing.qtyRequired
+          const qtyChanged = prevQty !== item.qty
+          existing.id = stableId
+          existing.title = item.title
+          existing.category = item.category
+          existing.qtyRequired = item.qty
+          existing.description = `${item.reason} ${item.assumptions}`.trim()
+          existing.source = item.source
+          existing.critical = item.critical
+          existing.applies = true
+          existing.updatedAt = now
+          // Cantidad requerida distinta: conservar “tengo”, revalidar estado según alcance.
+          if (qtyChanged) {
+            const have = existing.qtyAvailable ?? 0
+            if (item.qty != null && have >= item.qty) {
+              existing.status = 'cargado_verificado'
+              existing.qtyAvailable = item.qty
+              existing.verifiedBy = profile.id
+              existing.verifiedAt = now
+            } else {
+              existing.status = 'pendiente_revision'
+              existing.verifiedBy = null
+              existing.verifiedAt = null
+            }
+          }
+          keepIds.add(existing.id)
+          continue
+        }
         db.prepItems.push({
-          id: `${missionId}-ai-${nid()}`,
+          id: stableId,
           missionId,
           category: item.category,
           title: item.title,
@@ -364,7 +565,7 @@ export class PlatformService {
           ownerProfileId: profile.id,
           qtyRequired: item.qty,
           qtyAvailable: null,
-          critical: item.category === 'medico' || item.category === 'monitoreo',
+          critical: item.critical,
           status: 'pendiente_revision',
           evidence: '',
           verifiedBy: null,
@@ -372,16 +573,24 @@ export class PlatformService {
           applies: true,
           updatedAt: now,
         })
+        keepIds.add(stableId)
       }
-      current.rosterLocked = true
-      current.prepPercent = computePrepPercent(db.prepItems.filter((row) => row.missionId === missionId))
+      // Drop duplicate/legacy prep rows for this mission so the list stays coherent.
+      db.prepItems = db.prepItems.filter(
+        (row) => row.missionId !== missionId || keepIds.has(row.id),
+      )
+      current.analysisStale = false
+      if (current.stage === 'draft') current.stage = 'preflight'
+      current.prepPercent = computePrepPercent(
+        db.prepItems.filter((row) => row.missionId === missionId),
+      )
       current.updatedAt = now
       db.accessAudit.push({
         id: nid(),
         missionId,
         actorProfileId: profile.id,
         action: 'ai-prep-commit',
-        detail: `${selected.length} items; roster locked`,
+        detail: `${selected.length} items; analysis fresh`,
         createdAt: now,
       })
     })
@@ -390,7 +599,7 @@ export class PlatformService {
       mission: this.getMission(profile, missionId).mission,
       note,
       warning,
-      locked: true,
+      locked: false,
     }
   }
 
@@ -401,19 +610,25 @@ export class PlatformService {
     const items = db.prepItems.filter((item) => item.missionId === missionId)
     const percent = computePrepPercent(items)
     const applicable = items.filter((item) => item.applies && item.status !== 'no_aplica')
-    const criticalPending = applicable.filter((item) => item.critical && item.status !== 'cargado_verificado')
+    const criticalPending = applicable.filter(
+      (item) => item.critical && !isPrepItemComplete(item),
+    )
     const activeMembers = db.memberships.filter((item) => item.missionId === missionId && item.status === 'active')
+    /** Asientos de tripulación visibles: excluye mesa Ops. */
+    const crewSeats = activeMembers.filter((item) => item.role !== 'ops')
     const blockers: string[] = []
-    if (percent < 80) blockers.push(`Preparación ${percent}% < 80% (regla HELIOS de simulación)`)
+    if (mission.analysisStale) blockers.push('Hubo cambios desde el último análisis: volvé a analizar antes de despegar')
+    if (percent < 80) blockers.push(`Preparación ${percent}% < 80% (regla HELIOS: 80% o más para despegar)`)
     if (criticalPending.length) blockers.push(`${criticalPending.length} crítico(s) sin verificar`)
-    if (activeMembers.length < 1) blockers.push('Sin integrantes activos')
-    if (activeMembers.length > mission.plannedCrewCount) blockers.push('Integrantes activos exceden la planificación')
+    if (crewSeats.length < 1) blockers.push('Sin integrantes activos')
+    if (crewSeats.length > mission.plannedCrewCount) blockers.push('Integrantes activos exceden la planificación')
     return {
       ok: blockers.length === 0,
       percent,
+      analysisStale: Boolean(mission.analysisStale),
       blockers,
       criticalPending: criticalPending.map((item) => item.id),
-      activeMembers: activeMembers.length,
+      activeMembers: crewSeats.length,
       plannedCrewCount: mission.plannedCrewCount,
       disclaimer: 'El 80% es regla HELIOS de simulación; no es certificación médica ni requisito NASA.',
     }
@@ -438,6 +653,8 @@ export class PlatformService {
         createdAt: now,
       })
       mission.stage = 'aboard'
+      mission.rosterLocked = true
+      mission.analysisStale = false
       mission.prepPercent = evaluation.percent
       mission.updatedAt = now
       db.accessAudit.push({ id: nid(), missionId, actorProfileId: profile.id, action: 'start-simulated', detail: `${evaluation.percent}%`, createdAt: now })
@@ -451,7 +668,38 @@ export class PlatformService {
     this.store.mutate((db) => {
       const mission = db.missions.find((item) => item.id === missionId)
       if (!mission) throw new NotFoundException('Misión no encontrada')
+      const order: MissionStage[] = [
+        'draft',
+        'preflight',
+        'aboard',
+        'postmission',
+        'archived',
+        'cancelled',
+      ]
+      const from = order.indexOf(mission.stage)
+      const to = order.indexOf(stage)
+      if (to < 0) throw new BadRequestException('Etapa inválida')
+      // Forzado: nunca reabrir checklist después del despegue.
+      if (this.isDeployedStage(mission.stage) && (stage === 'draft' || stage === 'preflight')) {
+        throw new BadRequestException(
+          'Checklist cerrado de forma definitiva. No se puede volver a preembarque ni reabrir la preparación.',
+        )
+      }
+      if (
+        from >= 0 &&
+        to < from &&
+        mission.stage !== 'cancelled' &&
+        stage !== 'cancelled'
+      ) {
+        throw new BadRequestException(
+          'No se puede retroceder de etapa. El proceso de misión es solo hacia adelante.',
+        )
+      }
       mission.stage = stage
+      if (this.isDeployedStage(stage)) {
+        mission.rosterLocked = true
+        mission.analysisStale = false
+      }
       mission.updatedAt = Date.now()
     })
     return this.getMission(profile, missionId)
@@ -493,6 +741,31 @@ export class PlatformService {
       }
     })
     return this.getOrCreateWakeCheck(profile, missionId)
+  }
+
+  /** Crew wake / daily check-ins for chief & care roles (aboard awareness). */
+  listCrewWakeChecks(profile: Profile, missionId: string) {
+    this.requireRole(profile, missionId, ['chief', 'medic', 'psychologist', 'ops'])
+    const periodKey = new Date().toISOString().slice(0, 10)
+    const db = this.store.get()
+    const members = db.memberships.filter((item) => item.missionId === missionId && item.status === 'active')
+    return {
+      periodKey,
+      items: members.map((member) => {
+        const check = db.wakeChecks.find(
+          (item) => item.missionId === missionId && item.profileId === member.profileId && item.periodKey === periodKey,
+        )
+        const person = db.profiles.find((row) => row.id === member.profileId)
+        return {
+          profileId: member.profileId,
+          displayName: person?.displayName || member.profileId,
+          role: member.role,
+          status: check?.status || 'pending',
+          payload: check?.payload || {},
+          updatedAt: check?.createdAt || null,
+        }
+      }),
+    }
   }
 
   addSleep(profile: Profile, missionId: string, startAt: number, endAt: number, quality: number | null, kind = 'nap') {
@@ -537,6 +810,7 @@ export class PlatformService {
       intensity: input.intensity,
       context: input.context || '',
       source: input.source || 'self_report',
+      bodyRegion: input.bodyRegion ?? null,
       createdAt: Date.now(),
     }
     this.store.mutate((db) => db.symptomReports.push(row))
@@ -548,6 +822,71 @@ export class PlatformService {
     const target = subjectId || profile.id
     if (target !== profile.id) this.requireHealthAccess(profile, missionId, target, 'symptoms')
     return this.store.get().symptomReports.filter((item) => item.missionId === missionId && item.profileId === target)
+  }
+
+  addHealthIndicator(
+    profile: Profile,
+    missionId: string,
+    input: {
+      kind: HealthIndicatorReading['kind']
+      measuredAt?: number
+      value: number
+      valueSecondary?: number | null
+      unit?: string
+      origin?: HealthIndicatorReading['origin']
+      context?: string
+      quality?: HealthIndicatorReading['quality']
+      staleAfterMs?: number
+      notes?: string
+      bodyRegion?: string | null
+    },
+  ) {
+    this.requireMembership(profile, missionId)
+    const kind = input.kind
+    if (!INDICATOR_KINDS.includes(kind)) throw new BadRequestException('Tipo de indicador no válido')
+    if (!Number.isFinite(input.value)) throw new BadRequestException('Valor inválido')
+
+    if (kind === 'blood_pressure') {
+      const diastolic = input.valueSecondary
+      if (diastolic == null || !Number.isFinite(diastolic)) {
+        throw new BadRequestException('La presión arterial requiere sistólica y diastólica')
+      }
+    }
+    if (kind === 'mood') {
+      if (input.value < 1 || input.value > 5) {
+        throw new BadRequestException('El estado de ánimo es un autorreporte en escala 1–5')
+      }
+    }
+
+    const defaults = indicatorDefaults(kind)
+    const row: HealthIndicatorReading = {
+      id: nid(),
+      missionId,
+      profileId: profile.id,
+      kind,
+      measuredAt: input.measuredAt && Number.isFinite(input.measuredAt) ? Number(input.measuredAt) : Date.now(),
+      value: Number(input.value),
+      valueSecondary: kind === 'blood_pressure' ? Number(input.valueSecondary) : input.valueSecondary ?? null,
+      unit: input.unit?.trim() || defaults.unit,
+      origin: input.origin || 'manual',
+      context: input.context?.trim() || 'unspecified',
+      quality: input.quality || 'unknown',
+      staleAfterMs: input.staleAfterMs ?? defaults.staleAfterMs,
+      notes: input.notes?.trim() || '',
+      bodyRegion: input.bodyRegion ?? defaults.bodyRegion,
+      createdAt: Date.now(),
+    }
+    this.store.mutate((db) => db.healthIndicators.push(row))
+    return row
+  }
+
+  listHealthIndicators(profile: Profile, missionId: string, subjectId?: string, kind?: string) {
+    this.requireMembership(profile, missionId)
+    const target = subjectId || profile.id
+    if (target !== profile.id) this.requireHealthAccess(profile, missionId, target, 'vitals')
+    return this.store.get().healthIndicators
+      .filter((item) => item.missionId === missionId && item.profileId === target && (!kind || item.kind === kind))
+      .sort((a, b) => b.measuredAt - a.measuredAt)
   }
 
   // --- Grants ---
@@ -826,61 +1165,31 @@ export class PlatformService {
 
 }
 
-function starterPrep(missionId: string, at: number, ownerId: string): PrepItem[] {
-  return [
-    {
-      id: `${missionId}-crit-monitor`,
-      missionId,
-      category: 'monitoreo',
-      title: 'Kit de evaluación verificado',
-      description: 'Crítico para iniciar simulación.',
-      source: 'Planificación HELIOS',
-      ownerProfileId: ownerId,
-      qtyRequired: 1,
-      qtyAvailable: 0,
-      critical: true,
-      status: 'faltante',
-      evidence: '',
-      verifiedBy: null,
-      verifiedAt: null,
-      applies: true,
-      updatedAt: at,
-    },
-    {
-      id: `${missionId}-hygiene`,
-      missionId,
-      category: 'higiene',
-      title: 'Higiene básica',
-      description: 'Consumibles; estimación pendiente de tasa aprobada.',
-      source: 'Regla logística HELIOS',
-      ownerProfileId: ownerId,
-      qtyRequired: null,
-      qtyAvailable: null,
-      critical: false,
-      status: 'propuesto',
-      evidence: '',
-      verifiedBy: null,
-      verifiedAt: null,
-      applies: true,
-      updatedAt: at,
-    },
-    {
-      id: `${missionId}-comms`,
-      missionId,
-      category: 'comunicacion',
-      title: 'Procedimiento de enlace',
-      description: 'Canal de asistencia documentado.',
-      source: 'Medical Operations (referencia)',
-      ownerProfileId: ownerId,
-      qtyRequired: null,
-      qtyAvailable: null,
-      critical: true,
-      status: 'pendiente_revision',
-      evidence: '',
-      verifiedBy: null,
-      verifiedAt: null,
-      applies: true,
-      updatedAt: at,
-    },
-  ]
+function starterPrep(
+  missionId: string,
+  at: number,
+  ownerId: string,
+  plannedCrewCount = 4,
+  durationDays = 30,
+): PrepItem[] {
+  return buildMissionPrepChecklist(plannedCrewCount, durationDays).map((item) => ({
+    id: `${missionId}-plan-${item.key}`,
+    missionId,
+    category: item.category,
+    title: item.title,
+    description: item.qtyLabel
+      ? `${item.description} Cantidad planificada: ${item.qtyLabel}.`
+      : item.description,
+    source: item.source,
+    ownerProfileId: ownerId,
+    qtyRequired: item.qtyRequired,
+    qtyAvailable: null,
+    critical: item.critical,
+    status: 'pendiente_revision' as const,
+    evidence: '',
+    verifiedBy: null,
+    verifiedAt: null,
+    applies: true,
+    updatedAt: at,
+  }))
 }
