@@ -1,8 +1,10 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import * as tls from 'node:tls';
 
 export function loadBackendEnv(): void {
   applyFile(resolve(process.cwd(), '.env'));
+  configureSystemTrust();
 }
 
 function applyFile(file: string): void {
@@ -31,4 +33,18 @@ function parseEnv(text: string): Record<string, string> {
     entries[key] = value;
   }
   return entries;
+}
+
+/** Opt-in for managed networks whose CA is trusted by the operating system. */
+export function configureSystemTrust(env: NodeJS.ProcessEnv = process.env): void {
+  if (env.AI_USE_SYSTEM_CA !== 'true') return;
+  const trust = tls as typeof tls & {
+    getCACertificates?: (type: string) => string[];
+    setDefaultCACertificates?: (certs: string[]) => void;
+  };
+  if (!trust.getCACertificates || !trust.setDefaultCACertificates)
+    throw new Error('AI_USE_SYSTEM_CA requires a Node runtime with system certificate support.');
+  trust.setDefaultCACertificates([...new Set([
+    ...trust.getCACertificates('default'), ...trust.getCACertificates('system'),
+  ])]);
 }

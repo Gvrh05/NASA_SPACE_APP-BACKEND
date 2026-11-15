@@ -77,6 +77,8 @@ export interface ToolExchange {
   results: { id: string; content: string }[];
 }
 export interface ConversationInput {
+  /** Internal routing only; never accepted from HTTP input. */
+  requiredTool?: ToolName;
   responseSchema?: Record<string, unknown>;
   system: string;
   user: string;

@@ -397,6 +397,11 @@ async function conversationRequest(
       })),
     };
   }
+  if (input.requiredTool && input.tools.some((tool) => tool.name === input.requiredTool)) {
+    body.tool_choice = provider === 'anthropic'
+      ? { type: 'tool', name: input.requiredTool }
+      : { type: 'function', function: { name: input.requiredTool } };
+  }
   if (provider === 'gemini') {
     body.reasoning_effort =
       effort ?? (model.startsWith('gemini-2.5-flash') ? 'none' : 'low');
@@ -419,6 +424,9 @@ async function conversationRequest(
         json_schema: { name: 'helios_response', schema },
       };
     }
+    // Google rejects forced function calling together with JSON response MIME.
+    // Only this tool-selection round omits the response schema; final replies retain it.
+    if (input.requiredTool) delete body.response_format;
     if (!input.tools.length) delete body.tools;
   }
   try {

@@ -1,3 +1,4 @@
+import { DialogueService } from './dialogue.service';
 import { SpaceConversationService } from './space-conversation.service';
 import { Body, Controller, Get, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
@@ -7,12 +8,22 @@ import { AiService } from './ai.service';
 export class AiController {
   constructor(
     private readonly ai: AiService,
+    private readonly dialogue: DialogueService,
     private readonly conversation: SpaceConversationService,
   ) {}
 
   @Get('health')
   health() {
     return this.ai.health();
+  }
+
+  @Post('dialogue')
+  converse(@Body() body: unknown, @Req() request: Request) {
+    return this.dialogue.respond(
+      body,
+      String(request.headers['x-simulation-id'] ?? ''),
+      requestSignal(request),
+    );
   }
 
   @Post('analyze')
@@ -36,7 +47,7 @@ export class AiController {
   }
 }
 
-function requestSignal(request: Request): AbortSignal {
+export function requestSignal(request: Request): AbortSignal {
   const controller = new AbortController();
   const abort = () => controller.abort();
   request.once('aborted', abort);
