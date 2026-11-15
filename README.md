@@ -201,3 +201,7 @@ Permisos de modelo ligados a la sesi?n simulada, memoria reciente acotada y cuat
 ## Plan maestro implementado
 
 [Paridad, evidencia explicable, siete herramientas, demo guiada y controles de privacidad](docs/PLAN-IMPLEMENTADO.md).
+
+## Gemini en Quiron
+
+[Configuracion privada, firmas, verificacion de modelos y activacion](docs/GEMINI.md). El marcador de clave no activa el proveedor.

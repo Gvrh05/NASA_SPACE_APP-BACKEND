@@ -146,6 +146,79 @@ describe('authorized private conversation and read-only tools', () => {
         tools.execute(sid, token, name, {}, new AbortController().signal),
       ).toThrow();
   });
+  it.each([
+    'getRecentSleep',
+    'getLatestVitals',
+    'getMissionContext',
+    'getSupportOptions',
+    'getVitalTrends',
+    'getMeasurementQuality',
+    'getActiveHealthAlerts',
+  ])(
+    'Gemini protocol executes authorized %s and never exposes signatures',
+    async (name) => {
+      const first = {
+        role: 'assistant',
+        content: null,
+        tool_calls: [
+          {
+            id: 'gemini-call',
+            type: 'function',
+            function: { name, arguments: '{}' },
+            extra_content: {
+              google: { thought_signature: 'opaque-signature' },
+            },
+          },
+        ],
+      };
+      const fetcher = jest
+        .spyOn(global, 'fetch')
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [{ message: first, finish_reason: 'tool_calls' }],
+            }),
+          ),
+        )
+        .mockResolvedValueOnce(
+          new Response(
+            JSON.stringify({
+              choices: [
+                {
+                  message: { content: JSON.stringify(proposal) },
+                  finish_reason: 'stop',
+                },
+              ],
+            }),
+          ),
+        );
+      const runtime = resolveProvider({
+        AI_PROVIDER: 'openai-compatible',
+        AI_BASE_URL: 'https://generativelanguage.googleapis.com/v1beta/openai',
+        AI_MODEL: 'gemini-3.8-flash',
+        AI_API_KEY: 'fixture-key',
+      });
+      const service = new SpaceConversationService(
+        new AiService(runtime),
+        tools,
+      );
+      const before = sessions.get(sid);
+      const response = await service.respond(
+        body(),
+        sid,
+        token,
+        new AbortController().signal,
+      );
+      expect(response.toolsUsed).toEqual([{ name, status: 'ok' }]);
+      expect(response.result.nivel).toBe('solo_yo');
+      expect(JSON.stringify(response)).not.toContain('opaque-signature');
+      expect(sessions.get(sid)).toEqual(before);
+      const round = JSON.parse(fetcher.mock.calls[1][1]?.body as string) as {
+        messages: unknown[];
+      };
+      expect(round.messages).toContainEqual(first);
+    },
+  );
   it('binds vitals to the actual owner and rejects arbitrary arguments or names', () => {
     expect(
       tools.execute(
