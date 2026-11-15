@@ -276,6 +276,7 @@ export const stateSchema = z
           at,
           claimedValue: z.number().finite().nullable(),
           sensorId: id.nullable(),
+          crewId: crewId.optional(),
           detail: text,
         })
         .strict(),
