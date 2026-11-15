@@ -157,6 +157,7 @@ export class AiService {
         : provider
             .complete({
               system: input.system,
+              jsonSchema: input.responseSchema,
               user: JSON.stringify({
                 ...(JSON.parse(input.user) as Record<string, unknown>),
                 history: input.history,

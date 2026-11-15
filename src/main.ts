@@ -18,6 +18,15 @@ async function bootstrap() {
     .filter(Boolean);
   app.enableCors({
     exposedHeaders: ['X-Request-Id', 'Retry-After'],
+    allowedHeaders: [
+      'Content-Type',
+      'Authorization',
+      'Accept-Language',
+      'X-Simulation-Id',
+      'X-Request-Id',
+      'X-Helios-Session',
+      'X-Helios-Mission',
+    ],
     origin: origins,
     credentials: true,
   });

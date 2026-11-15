@@ -164,3 +164,17 @@ it.each(['models/gemini-3.8-flash', 'gemini-3.8-flash'])(
     expect(normalizeGeminiModelId(value)).toBe('gemini-3.8-flash');
   },
 );
+
+it('forces an authorized tool without incompatible JSON MIME, restoring JSON on the answer turn', async () => {
+  const fetcher = jest.spyOn(global, 'fetch').mockResolvedValue(packet({
+    content: null, tool_calls: [{ id: 'sleep', type: 'function', function: { name: 'getRecentSleep', arguments: '{}' } }],
+  }, 'tool_calls'));
+  const q = { ...input(), requiredTool: 'getRecentSleep' as const };
+  await resolveProvider(env).provider!.converse!(q);
+  const body = JSON.parse(fetcher.mock.calls[0][1]?.body as string);
+  expect(body.tool_choice).toEqual({ type: 'function', function: { name: 'getRecentSleep' } });
+  expect(body).not.toHaveProperty('response_format');
+  fetcher.mockResolvedValue(packet({ content: '{"respuesta":"ok"}' }));
+  await resolveProvider(env).provider!.converse!(input());
+  expect(JSON.parse(fetcher.mock.calls[1][1]?.body as string).response_format.type).toBe('json_schema');
+});

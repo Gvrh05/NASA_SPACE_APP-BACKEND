@@ -1,3 +1,4 @@
+import { DialogueService } from './dialogue.service';
 import { SimulationModule } from '../simulation/simulation.module';
 import { SpaceAccessController } from './space-access.controller';
 import { SpaceToolsService } from './space-tools.service';
@@ -9,6 +10,11 @@ import { AiService } from './ai.service';
 @Module({
   imports: [SimulationModule],
   controllers: [AiController, SpaceAccessController],
-  providers: [AiService, SpaceToolsService, SpaceConversationService],
+  providers: [
+    DialogueService,
+    AiService,
+    SpaceToolsService,
+    SpaceConversationService,
+  ],
 })
 export class AiModule {}
