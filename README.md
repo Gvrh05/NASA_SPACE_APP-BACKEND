@@ -14,6 +14,18 @@ pnpm start:dev
 
 El servidor escucha en http://127.0.0.1:3000. La IA es opcional. Para iniciar ambos proyectos desde el frontend se usa npm run dev, después de instalar las dependencias de ambos repositorios. npm run dev:api también inicia NestJS.
 
+## Despliegue
+
+El build y el arranque son pasos separados. En producción se ejecuta el JavaScript compilado en `dist/`, no el CLI de Nest.
+
+```powershell
+pnpm install --frozen-lockfile
+pnpm build
+pnpm start        # node dist/main.js
+```
+
+Render usa `pnpm run build` como build command y `pnpm run start` como start command. `start:dev` queda reservado para desarrollo local, porque `nest start` compila con TypeScript dentro del mismo proceso y necesita más memoria que una instancia de 512 MB. El servidor escucha en `0.0.0.0` y en el puerto indicado por `PORT`.
+
 ## Configuración
 
 | Variable | Uso y valor por defecto |
