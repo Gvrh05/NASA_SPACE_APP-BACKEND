@@ -4,6 +4,9 @@ export const toolNames = [
   'getLatestVitals',
   'getMissionContext',
   'getSupportOptions',
+  'getVitalTrends',
+  'getActiveHealthAlerts',
+  'getMeasurementQuality',
 ] as const;
 export const toolNameSchema = z.enum(toolNames);
 export const toolArgumentsSchema = z.object({}).strict();

@@ -8,7 +8,12 @@ import { createHash, randomBytes } from 'node:crypto';
 import { z } from 'zod';
 import { SimulationService } from '../simulation/simulation.service';
 import { simulatedPinMatches } from '../simulation/domain/spaceAccess';
-import { latestReliable } from '../simulation/domain/selectors';
+import {
+  latestReliable,
+  vitalTrends,
+  measurementQuality,
+  activeHealthAlerts,
+} from '../simulation/domain/selectors';
 import { crewById } from '../simulation/domain/crew';
 import {
   accessSchema,
@@ -81,7 +86,14 @@ export class SpaceToolsService {
       (n) =>
         n === 'getSupportOptions' ||
         (n === 'getRecentSleep' && grant.dataUse.sleep) ||
-        (n === 'getLatestVitals' && grant.dataUse.pulse) ||
+        ([
+          'getLatestVitals',
+          'getVitalTrends',
+          'getMeasurementQuality',
+        ].includes(n) &&
+          grant.dataUse.pulse) ||
+        (n === 'getActiveHealthAlerts' &&
+          (grant.dataUse.pulse || grant.dataUse.symptoms)) ||
         (n === 'getMissionContext' && grant.dataUse.mission),
     );
   }
@@ -115,6 +127,26 @@ export class SpaceToolsService {
       throw new BadRequestException();
     const state = this.state(sessionId);
     signal.throwIfAborted();
+    if (name === 'getVitalTrends')
+      return { simulated: true, ...vitalTrends(state, grant.crewId) };
+    if (name === 'getMeasurementQuality')
+      return { simulated: true, ...measurementQuality(state, grant.crewId) };
+    if (name === 'getActiveHealthAlerts')
+      return {
+        simulated: true,
+        alerts: activeHealthAlerts(state, grant.crewId)
+          .filter((a) =>
+            a.type === 'change' ? grant.dataUse.pulse : grant.dataUse.symptoms,
+          )
+          .map((a) => ({
+            id: a.id,
+            type: a.type,
+            status: a.status,
+            openedAt: a.openedAt,
+            updatedAt: a.updatedAt,
+          })),
+        note: 'Simulated findings; not diagnoses. Private text and reasons are omitted.',
+      };
     if (name === 'getSupportOptions')
       return {
         simulated: true,

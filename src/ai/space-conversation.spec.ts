@@ -87,6 +87,9 @@ describe('authorized private conversation and read-only tools', () => {
     'getLatestVitals',
     'getMissionContext',
     'getSupportOptions',
+    'getVitalTrends',
+    'getMeasurementQuality',
+    'getActiveHealthAlerts',
   ])('executes %s without changing any session state', (name) => {
     const before = sessions.get(sid);
     const result = tools.execute(
@@ -98,6 +101,50 @@ describe('authorized private conversation and read-only tools', () => {
     );
     expect(result).toBeDefined();
     expect(sessions.get(sid)).toEqual(before);
+  });
+  it('scopes new tools to consent and omits private alert reasons', () => {
+    const before = sessions.get(sid);
+    expect(
+      tools.execute(
+        sid,
+        token,
+        'getVitalTrends',
+        {},
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ hrMin: 64, hrMax: 76, currentHr: 70 });
+    expect(
+      tools.execute(
+        sid,
+        token,
+        'getMeasurementQuality',
+        {},
+        new AbortController().signal,
+      ),
+    ).toMatchObject({ status: 'valid', kind: 'heart_rate' });
+    const alerts = tools.execute(
+      sid,
+      token,
+      'getActiveHealthAlerts',
+      {},
+      new AbortController().signal,
+    );
+    expect(JSON.stringify(alerts)).not.toContain('"reason":');
+    expect(sessions.get(sid)).toEqual(before);
+    token = grant({
+      sleep: false,
+      pulse: false,
+      symptoms: false,
+      mission: false,
+    });
+    for (const name of [
+      'getVitalTrends',
+      'getMeasurementQuality',
+      'getActiveHealthAlerts',
+    ])
+      expect(() =>
+        tools.execute(sid, token, name, {}, new AbortController().signal),
+      ).toThrow();
   });
   it('binds vitals to the actual owner and rejects arbitrary arguments or names', () => {
     expect(

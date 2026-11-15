@@ -1,9 +1,14 @@
 ﻿import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { IncomingMessage } from 'node:http';
+import { runInLocale } from '../simulation/locale';
+import type { Request, Response, NextFunction } from 'express';
 import { requestContext } from './http-security';
 
 export function configureHttp(app: NestExpressApplication) {
   app.use(requestContext);
+  app.use((req: Request, _res: Response, next: NextFunction) =>
+    runInLocale(req.headers['accept-language'], next),
+  );
   const isJson = (req: IncomingMessage) =>
     /^application\/(?:[a-z0-9.+-]*\+)?json(?:\s*;|$)/i.test(
       req.headers['content-type'] ?? '',

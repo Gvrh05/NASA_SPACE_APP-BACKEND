@@ -166,3 +166,7 @@ Pruebas: `npm test -- --runInBand src/simulation/communication-draft.spec.ts`.
 ## Mi espacio y Quir?n Bot
 
 Permisos de modelo ligados a la sesi?n simulada, memoria reciente acotada y cuatro herramientas de solo lectura. Ver [contratos, archivos, pruebas y l?mites de seguridad](docs/MI-ESPACIO.md).
+
+## Plan maestro implementado
+
+[Paridad, evidencia explicable, siete herramientas, demo guiada y controles de privacidad](docs/PLAN-IMPLEMENTADO.md).

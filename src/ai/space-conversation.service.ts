@@ -83,6 +83,12 @@ export class SpaceConversationService {
         tools: allowed.map((name) => ({
           name,
           description: {
+            getVitalTrends:
+              'Read authorized 30-minute heart rate trends and individual baseline; never infer a cause.',
+            getMeasurementQuality:
+              'Read authorized pulse measurement quality and missing resting control.',
+            getActiveHealthAlerts:
+              'Read only permitted active health alert metadata for the owner, without private reasons.',
             getRecentSleep:
               "Read the owner's recent simulated sleep if authorized.",
             getLatestVitals:
