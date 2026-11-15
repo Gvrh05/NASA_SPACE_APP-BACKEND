@@ -63,6 +63,11 @@ describe('NASA mappings and boundaries', () => {
     });
     expect(result.events[0].type).toBe('FLR');
     expect(result.events.length).toBeGreaterThan(0);
+    expect(result.events[0]).toMatchObject({
+      beginTime: expect.any(String),
+      instruments: expect.any(Array),
+    });
+    expect(result.failures).toEqual([]);
     expect(JSON.stringify(result)).not.toContain('api_key');
   });
   it('deduplicates, caches and reports external failures without fabricated data', async () => {

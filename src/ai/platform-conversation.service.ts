@@ -10,10 +10,25 @@ import { toolArgumentsSchema, ToolName } from './space-conversation.contract';
 import { SPACE_SYSTEM_PROMPT, CONVERSATIONAL_STYLE } from './contract';
 import { requiredEvidenceTool } from './space-conversation.service';
 import { localEvidenceText } from './care-evidence';
+import { authorizedCareHistory } from './care-memory';
 import { textSafetyCategories } from './space-safety';
 
 const CARE_PROMPT = `${SPACE_SYSTEM_PROMPT}
-This is the owner's separate physical-health or emotional-wellbeing conversation in HELIOS. The selected mode is context, not a reason to refuse another ordinary question. For an initially ambiguous "I feel bad" ask whether it is physical, emotional or both, once. A reply "physical" or "fisico/fisica" in that context clarifies discomfort, not the science subject. Next ask what bothers them. A headache already specifies a physical symptom: ask a useful next question such as when it started, not whether it is emotional. Do not repeat a previous question verbatim. Honor explicit changes of topic. Never assume location, personal history or readings. General conversation does not require data consent. For getLatestVitals, report only the actual value and recorded time. Do not label it elevated/low by assuming generic ranges, or assume the person noticed a change. For a personal comparison consult getVitalTrends. For getVitalTrends, hrMin/hrMax are the individual baseline reference limits, NEVER observed minimum/maximum readings. sampleCount is the count of usable samples; do not invent an earlier reading range or causes. Only supplied tool results establish actual records; missing evidence is not stability. Do not direct the person out of this private conversation just because the topic is personal. No summary is shared automatically. Do not invent support resources or notify anyone.`;
+You are Quirón in a private HELIOS care conversation (physical or emotional mode). Default language is English. Use Spanish only when locale is "es". Never mix languages in one reply.
+
+Mission awareness: call getMissionContext when relevant. Know the mission name, stage (draft/preflight/aboard/postmission), and destination. When aboard, talk about being on the mission habitat — sleep, check-in, and how the person feels today. todayCheckIn in getMissionContext is their wake/daily report.
+
+Care roster: always use getSupportOptions before promising a human appointment. If an active medic or psychologist is listed, offer to help request a visit with that role (they confirm in Mi salud / appointments). If none are available, or the person says the doctor/psychologist is missing, unavailable, or something happened to them, you MUST act as a calm temporary support backup: structure what is happening, suggest immediate safety steps, urge contacting the chief or any available human, and stay with them conversationally. You still do not diagnose, prescribe, or claim to have notified anyone.
+
+Illness / discomfort protocol:
+1) Clarify physical vs emotional vs both (once if ambiguous). A reply "physical"/"fisico" clarifies discomfort, not a science subject.
+2) Ask onset, severity (1–5), what makes it better/worse, and red flags (chest pain, trouble breathing, fainting, suicidal thoughts, severe bleeding).
+3) For red flags or emergency language: tell them to seek human medical help now; do not invent a treatment plan.
+4) For mild/moderate issues: help organize rest, hydration, symptom logging, and whether to book medic vs psychologist.
+5) Offer analysis only as explanation of recorded/simulated evidence — never as a clinical diagnosis.
+When explaining space-health ideas, use public NASA HRP context (five hazards, sleep, bone/muscle, fluid shift, behavioral health, delayed care). Cite hazards/risks/Evidence/Medical Operations/OCHMO/OSDR as background. Never invent a personal NASA dose or a treatment.
+
+A headache already specifies a physical symptom: ask a useful next question such as when it started. Do not repeat a previous question verbatim. Honor topic changes. General chat does not require data consent. For getLatestVitals, report only value and recorded time. For getVitalTrends, hrMin/hrMax are individual baseline limits, NEVER observed min/max. Missing evidence is not stability. No summary is shared automatically. Do not invent support resources or claim you sent a message.`;
 
 @Injectable()
 export class PlatformConversationService {
@@ -103,9 +118,9 @@ Return JSON only: respuesta (up to 1200 characters containing the draft), nivel:
   }
 
   private history(conversation: Conversation) {
-    const history = conversation.messages.slice(-12).map(m => ({ role: m.role, content: m.text.slice(0, 2000) }));
-    while (history.length && Buffer.byteLength(JSON.stringify(history), 'utf8') > 12000) history.shift();
-    return history;
+    const recent = conversation.messages.map((message) => ({ role: message.role, content: message.text.slice(0, 2000) }));
+    const prior = this.platform.longitudinalUserLines(conversation);
+    return authorizedCareHistory(recent, prior);
   }
   private providerFailure(error: unknown): string {
     if (error instanceof HttpException) {
@@ -144,12 +159,39 @@ Return JSON only: respuesta (up to 1200 characters containing the draft), nivel:
         if (!toolArgumentsSchema.safeParse(args).success || !allowed().includes(name as ToolName)) throw new HttpException('Tool not authorized', 403);
         if (name === 'getMissionContext') {
           const { mission } = this.platform.getMission(profile, snapshot.missionId);
-          return { simulated: true, name: mission.name, stage: mission.stage, destination: mission.destination };
+          const wake = this.platform.getOrCreateWakeCheck(profile, snapshot.missionId, false);
+          return {
+            simulated: true,
+            name: mission.name,
+            stage: mission.stage,
+            destination: mission.destination,
+            environment: mission.environment,
+            durationDays: mission.durationDays,
+            aboard: mission.stage === 'aboard',
+            todayCheckIn: {
+              status: wake.check.status,
+              payload: wake.check.payload,
+              note: wake.note,
+            },
+          };
         }
         if (name === 'getSupportOptions') {
           const { members } = this.platform.getMission(profile, snapshot.missionId);
-          return { simulated: true, notified: false, options: members.filter(m => m.status === 'active' && ['medic', 'psychologist'].includes(m.role))
-            .map(m => ({ role: m.role, profileId: m.profileId })) };
+          const care = members.filter(m => m.status === 'active' && ['medic', 'psychologist'].includes(m.role))
+            .map(m => ({ role: m.role, profileId: m.profileId }));
+          const hasMedic = care.some(m => m.role === 'medic');
+          const hasPsych = care.some(m => m.role === 'psychologist');
+          return {
+            simulated: true,
+            notified: false,
+            options: care,
+            hasMedic,
+            hasPsychologist: hasPsych,
+            backupRequired: !hasMedic && !hasPsych,
+            appointmentHint: hasMedic || hasPsych
+              ? 'Offer to help the person request an appointment with the available role in HELIOS (Mi salud).'
+              : 'No medic/psychologist on active roster. Act as temporary supportive backup; urge contacting the chief; do not diagnose.',
+          };
         }
         if (name === 'getRecentSleep') {
           const records = this.platform.listSleep(profile, snapshot.missionId).sort((a,b) => b.endAt - a.endAt);

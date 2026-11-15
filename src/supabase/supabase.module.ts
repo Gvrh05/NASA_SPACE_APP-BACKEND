@@ -34,7 +34,7 @@ export class SupabaseController {
         status: response.status,
         hasDbPassword: Boolean(process.env.SUPABASE_DB_PASSWORD),
         message: response.ok
-          ? 'Supabase alcanzable. La simulación HELIOS sigue en Nest/IndexedDB hasta migrar tablas.'
+          ? 'Supabase alcanzable. Con SUPABASE_SERVICE_ROLE_KEY la plataforma guarda helios_platform_state; si falta la clave, sigue el JSON local.'
           : 'Supabase respondió con error; revisá la URL y la publishable key.',
       }
     } catch {

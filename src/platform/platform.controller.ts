@@ -42,6 +42,7 @@ export class PlatformController {
     return this.platform.createMission(this.profile(token), {
       name: String(body?.name || 'Nueva misión'),
       destination: body?.destination ? String(body.destination) : '',
+      environment: body?.environment ? String(body.environment) as never : undefined,
       plannedStart: body?.plannedStart ? String(body.plannedStart) : null,
       durationDays: Number(body?.durationDays || 30),
       plannedCrewCount: Number(body?.plannedCrewCount || 4),
@@ -135,6 +136,11 @@ export class PlatformController {
     return this.platform.completeWakeCheck(this.profile(token), id || '', body || {})
   }
 
+  @Get('missions/:id/wake/crew')
+  wakeCrew(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.listCrewWakeChecks(this.profile(token), id || '')
+  }
+
   @Get('missions/:id/sleep')
   sleepList(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Query('subjectId') subjectId?: string) {
     return { items: this.platform.listSleep(this.profile(token), id || '', subjectId) }
@@ -158,6 +164,34 @@ export class PlatformController {
       intensity: body?.intensity == null ? null : Number(body.intensity),
       context: String(body?.context || ''),
       source: String(body?.source || 'self_report'),
+      bodyRegion: body?.bodyRegion == null || body.bodyRegion === '' ? null : String(body.bodyRegion),
+    })
+  }
+
+  @Get('missions/:id/indicators')
+  indicators(
+    @Headers('x-helios-session') token?: string,
+    @Param('id') id?: string,
+    @Query('subjectId') subjectId?: string,
+    @Query('kind') kind?: string,
+  ) {
+    return { items: this.platform.listHealthIndicators(this.profile(token), id || '', subjectId, kind) }
+  }
+
+  @Post('missions/:id/indicators')
+  indicatorAdd(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Body() body?: Record<string, unknown>) {
+    return this.platform.addHealthIndicator(this.profile(token), id || '', {
+      kind: String(body?.kind || '') as never,
+      measuredAt: body?.measuredAt == null ? undefined : Number(body.measuredAt),
+      value: Number(body?.value),
+      valueSecondary: body?.valueSecondary == null || body.valueSecondary === '' ? null : Number(body.valueSecondary),
+      unit: body?.unit == null ? undefined : String(body.unit),
+      origin: body?.origin == null ? undefined : String(body.origin) as never,
+      context: body?.context == null ? undefined : String(body.context),
+      quality: body?.quality == null ? undefined : String(body.quality) as never,
+      staleAfterMs: body?.staleAfterMs == null ? undefined : Number(body.staleAfterMs),
+      notes: body?.notes == null ? undefined : String(body.notes),
+      bodyRegion: body?.bodyRegion == null || body.bodyRegion === '' ? null : String(body.bodyRegion),
     })
   }
 
@@ -240,5 +274,16 @@ export class PlatformController {
   @Get('evidence')
   evidence() {
     return { items: this.platform.listEvidence() }
+  }
+
+  @Get('storage')
+  storage(@Headers('x-helios-session') token?: string) {
+    this.profile(token)
+    return this.platform.storageStatus()
+  }
+
+  @Post('storage/restore')
+  restore(@Headers('x-helios-session') token?: string, @Body() body?: { file?: string }) {
+    return this.platform.restoreDamaged(this.profile(token), body?.file || '')
   }
 }

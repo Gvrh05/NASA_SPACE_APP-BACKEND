@@ -1,4 +1,4 @@
-﻿import {
+import {
   CanActivate,
   ExecutionContext,
   HttpException,
@@ -28,7 +28,11 @@ export class RequestRateGuard implements CanActivate {
     const res = context.switchToHttp().getResponse<Response>();
     if (!['POST', 'PUT', 'PATCH', 'DELETE'].includes(req.method)) return true;
     const path = req.path.toLowerCase().replace(/\/+$/, '');
-    const ai = /^\/api\/ai(?:\/|$)/.test(path);
+    // AI budget covers Nest /api/ai and platform Quirón conversation writes (not role select / mission hub).
+    const ai =
+      /^\/api\/ai(?:\/|$)/.test(path) ||
+      /^\/api\/platform\/quiron(?:\/|$)/.test(path) ||
+      /^\/api\/platform\/missions\/[^/]+\/quiron(?:\/|$)/.test(path);
     const imported = path === '/api/simulation';
     const group = ai ? 'ai' : imported ? 'session' : 'write';
     const limit = ai
