@@ -148,3 +148,7 @@ Jest prueba escenarios, paridad, validación, persistencia, firmas, duplicados, 
 ## Recursos NASA
 
 Se consultaron Human Research Roadmap y las publicaciones oficiales de OSDR para documentar la relación científica del escenario de fatiga. Los datos de ejecución son sintéticos y no se importaron datasets NASA. La procedencia y el uso concreto están en [recursos científicos](docs/nasa-resources.md). La auditoría y las decisiones de migración están en [auditoría](docs/audit.md).
+
+## DONKI, RadLab y OSDR
+
+NASA environmental integration is separate from simulation and medical alerts. See [contracts, verified sources, configuration and tests](docs/NASA-INTEGRATION.md). Configure NASA_API_KEY exclusively in this backend.
