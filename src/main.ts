@@ -10,16 +10,19 @@ async function bootstrap() {
     bodyParser: false,
   });
   configureHttp(app);
+  const origins = (
+    process.env.CORS_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173'
+  )
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean);
   app.enableCors({
     exposedHeaders: ['X-Request-Id', 'Retry-After'],
-    origin: (
-      process.env.CORS_ORIGINS || 'http://127.0.0.1:5173,http://localhost:5173'
-    )
-      .split(',')
-      .map((value) => value.trim()),
+    origin: origins,
+    credentials: true,
   });
   const port = Number(process.env.PORT ?? 3000);
-  const host = process.env.HOST ?? '0.0.0.0';
+  const host = process.env.HOST || '0.0.0.0';
   await app.listen(port, host);
 }
 void bootstrap();
