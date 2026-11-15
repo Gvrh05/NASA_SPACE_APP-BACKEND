@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { SimulationService } from '../simulation/simulation.service';
 import { latestReliable } from '../simulation/domain/selectors';
 import { SpaceToolsService } from './space-tools.service';
-import { SpaceConversationService } from './space-conversation.service';
+import { SpaceConversationService, requiredEvidenceTool } from './space-conversation.service';
 import { AiService } from './ai.service';
 import { resolveProvider } from './provider';
 import type {
@@ -506,4 +506,25 @@ describe('authorized private conversation and read-only tools', () => {
     ).rejects.toMatchObject({ status: 503 });
     expect(sessions.get(sid)).toEqual(before);
   });
+  it('makes actual tool availability explicit without inventing disabled permissions', async () => {
+    token = grant({ sleep: false, pulse: false, symptoms: false, mission: false });
+    const service = conversation(async (input) => {
+      const authorization = input.system.split('SERVER AUTHORIZATION FOR THIS TURN:')[1];
+      expect(authorization).toContain('getSupportOptions');
+      expect(authorization).not.toContain('getLatestVitals');
+      expect(input.tools.map((t) => t.name)).toEqual(['getSupportOptions']);
+      return final();
+    });
+    await service.respond(body(), sid, token, new AbortController().signal);
+  });
+
+});
+
+it('plans evidence only for permitted concrete requests, not definitions or emotions', () => {
+  expect(requiredEvidenceTool('What is my latest heart rate?', ['getLatestVitals'])).toBe('getLatestVitals');
+  expect(requiredEvidenceTool('What is my latest heart rate?', ['getSupportOptions'])).toBeUndefined();
+  expect(requiredEvidenceTool('?Qu? es una alerta?', ['getActiveHealthAlerts'])).toBeUndefined();
+  expect(requiredEvidenceTool('I feel lonely', ['getLatestVitals', 'getSupportOptions'])).toBeUndefined();
+  expect(requiredEvidenceTool('How can I improve my quality of life?', ['getMeasurementQuality'])).toBeUndefined();
+  expect(requiredEvidenceTool('What support options are available?', ['getSupportOptions'])).toBe('getSupportOptions');
 });

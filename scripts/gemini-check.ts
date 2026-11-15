@@ -120,9 +120,22 @@ async function main() {
       dataUse: { sleep: true, pulse: true, symptoms: true, mission: true },
     }).token;
     const service = new SpaceConversationService(new AiService(runtime), tools);
+    const selectedTool = process.argv.find((arg) => arg.startsWith('--tool='))?.slice(7);
+    if (selectedTool && !toolNames.includes(selectedTool as (typeof toolNames)[number]))
+      throw new Error('Unknown evaluation tool');
     const checks = process.argv.includes('--tools')
-      ? [...toolNames]
+      ? [...toolNames].filter((name) => !selectedTool || name === selectedTool)
       : ['basic'];
+    const questions: Record<string, string> = {
+      getRecentSleep: 'What is my latest recorded simulated sleep duration?',
+      getLatestVitals: 'What is my latest recorded simulated heart rate?',
+      getVitalTrends: 'How has my simulated pulse changed in the last 30 minutes compared with my baseline?',
+      getMeasurementQuality: 'How reliable is my simulated pulse signal and how old is the reading?',
+      getActiveHealthAlerts: 'What active simulated health alerts do I have?',
+      getMissionContext: 'What mission stage and Earth link status are recorded in this simulation?',
+      getSupportOptions: 'What human support options can I consider without notifying anyone?',
+    };
+    const unverified: string[] = [];
     for (const name of checks) {
       const result = await service.respond(
         {
@@ -130,7 +143,7 @@ async function main() {
           textoPersona:
             name === 'basic'
               ? 'Hello, this is a synthetic demonstration. Respond briefly.'
-              : `In this synthetic demo, consult ${name} before responding. Never modify any state.`,
+              : `In this synthetic demo: ${questions[name]} Consult ${name} before answering. Never modify any state.`,
           locale: 'en',
           selectedLevel: 'solo_yo',
           history: [],
@@ -142,8 +155,11 @@ async function main() {
       const used = result.toolsUsed
         .filter((t) => t.status === 'ok')
         .map((t) => t.name);
-      if (name !== 'basic' && !used.includes(name))
-        throw new Error(`Model did not request ${name}; check not verified.`);
+      if (name !== 'basic' && !used.includes(name)) {
+        unverified.push(name);
+        console.log(JSON.stringify({ check: name, verified: false, toolsUsed: used, response: result.result.respuesta }));
+        continue;
+      }
       console.log(
         JSON.stringify({
           check: name,
@@ -155,6 +171,7 @@ async function main() {
       );
     }
     tools.revoke(sid, token);
+    if (unverified.length) throw new Error(`Tools not verified: ${unverified.join(", ")}`);
   } finally {
     if (old === undefined) delete process.env.SIMULATION_DATA_DIR;
     else process.env.SIMULATION_DATA_DIR = old;
