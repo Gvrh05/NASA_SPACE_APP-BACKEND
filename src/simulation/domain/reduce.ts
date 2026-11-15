@@ -68,6 +68,7 @@ export type Action =
     }
   | { type: 'updateResource'; resourceId: string; name: string; location: string; status: Resource['status'] }
   | { type: 'createCommunication'; crewId: CrewId; episodeId: string | null; subject: string; body: string; idempotencyKey: string }
+  | { type: 'updateCommunicationDraft'; id: string; subject: string; body: string }
   | { type: 'transitionCommunication'; id: string; status: CommStatus }
   | { type: 'deliverQueued' }
   | { type: 'confirmReceived' }
@@ -136,6 +137,8 @@ export function reduce(state: AppState, action: Action): AppState {
       return updateResource(state, action)
     case 'createCommunication':
       return createCommunication(state, action)
+    case 'updateCommunicationDraft':
+      return updateCommunicationDraft(state, action)
     case 'transitionCommunication':
       return transitionCommunication(state, action.id, action.status)
     case 'deliverQueued':
@@ -538,6 +541,31 @@ function createCommunication(
     action: 'draft-communication',
     entityId: communication.id,
     detail: subject,
+  })
+}
+
+function updateCommunicationDraft(
+  state: AppState,
+  action: { id: string; subject: string; body: string },
+): AppState {
+  if (!canManageComms(state.role)) return withNotice(state, 'err', 'Este rol simulado no puede editar un borrador.')
+  const current = state.communications.find((item) => item.id === action.id)
+  if (!current) return withNotice(state, 'err', 'No se encontró el borrador.')
+  if (current.status !== 'draft') return withNotice(state, 'err', 'Solo un borrador se puede editar. Este mensaje no cambió.')
+  const subject = action.subject.trim()
+  const body = action.body.trim()
+  if (subject.length < 3) return withNotice(state, 'err', 'El asunto es demasiado corto.')
+  if (subject.length > 180) return withNotice(state, 'err', 'El asunto supera el l\u00edmite de 180 caracteres.')
+  if (body.length < 3) return withNotice(state, 'err', 'El mensaje está vacío.')
+  if (body.length > 4000) return withNotice(state, 'err', 'El mensaje supera el límite de 4000 caracteres.')
+  const communications = state.communications.map((item) =>
+    item.id === current.id ? { ...item, subject, body, status: 'draft' as const } : item,
+  )
+  return addAudit(withNotice({ ...state, communications }, 'ok', 'Borrador guardado. Todavía no está en cola ni fue enviado.'), {
+    actor: state.role,
+    action: 'edit-communication-draft',
+    entityId: current.id,
+    detail: 'Asunto y cuerpo del borrador actualizados.',
   })
 }
 

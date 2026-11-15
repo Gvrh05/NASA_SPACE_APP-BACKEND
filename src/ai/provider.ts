@@ -1,5 +1,6 @@
 export class ProviderError extends Error {
-  readonly code: 'timeout' | 'rate_limit' | 'network' | 'invalid_response' | 'aborted';
+  readonly code:
+    'timeout' | 'rate_limit' | 'network' | 'invalid_response' | 'aborted';
 
   constructor(code: ProviderError['code'], message: string) {
     super(message);
@@ -11,7 +12,11 @@ export class ProviderError extends Error {
 export interface ModelProvider {
   name: string;
   model: string;
-  complete(input: { system: string; user: string; signal: AbortSignal }): Promise<string>;
+  complete(input: {
+    system: string;
+    user: string;
+    signal: AbortSignal;
+  }): Promise<string>;
 }
 
 export interface ResolvedProvider {
@@ -21,7 +26,9 @@ export interface ResolvedProvider {
   model: string;
 }
 
-export function resolveProvider(env: NodeJS.ProcessEnv = process.env): ResolvedProvider {
+export function resolveProvider(
+  env: NodeJS.ProcessEnv = process.env,
+): ResolvedProvider {
   const providerName = env.AI_PROVIDER?.trim() || 'openai-compatible';
   const model =
     env.AI_MODEL?.trim() ||
@@ -31,6 +38,8 @@ export function resolveProvider(env: NodeJS.ProcessEnv = process.env): ResolvedP
   if (!key) missing.push('AI_API_KEY');
   if (missing.length) return { provider: null, missing, providerName, model };
   const timeoutMs = Number(env.AI_TIMEOUT_MS ?? 25000);
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 100 || timeoutMs > 60000)
+    throw new Error('Invalid AI_TIMEOUT_MS');
   const provider =
     providerName === 'anthropic'
       ? anthropicProvider(key, model, timeoutMs)
@@ -54,32 +63,57 @@ function openAiCompatibleProvider(
     model,
     async complete({ system, user, signal }) {
       const timeout = AbortSignal.timeout(timeoutMs);
-      const response = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
-        method: 'POST',
-        headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model,
-          temperature: 0.2,
-          messages: [
-            { role: 'system', content: system },
-            { role: 'user', content: user },
-          ],
-        }),
-        signal: AbortSignal.any([signal, timeout]),
-      }).catch((error: unknown) => {
+      const response = await fetch(
+        `${baseUrl.replace(/\/$/, '')}/chat/completions`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${key}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            model,
+            max_tokens: 1200,
+            temperature: 0.2,
+            messages: [
+              { role: 'system', content: system },
+              { role: 'user', content: user },
+            ],
+          }),
+          signal: AbortSignal.any([signal, timeout]),
+        },
+      ).catch((error: unknown) => {
         throw mapFetchError(error, signal);
       });
-      if (response.status === 429) throw new ProviderError('rate_limit', 'El proveedor limitó las solicitudes.');
-      if (!response.ok) throw new ProviderError('network', `El proveedor respondió ${response.status}.`);
-      const body = (await response.json()) as { choices?: { message?: { content?: string } }[] };
+      if (response.status === 429)
+        throw new ProviderError(
+          'rate_limit',
+          'El proveedor limitó las solicitudes.',
+        );
+      if (!response.ok)
+        throw new ProviderError(
+          'network',
+          `El proveedor respondió ${response.status}.`,
+        );
+      const body = (await readProviderJson(response)) as {
+        choices?: { message?: { content?: string } }[];
+      };
       const content = body.choices?.[0]?.message?.content;
-      if (!content) throw new ProviderError('invalid_response', 'El proveedor no devolvió contenido.');
+      if (!content)
+        throw new ProviderError(
+          'invalid_response',
+          'El proveedor no devolvió contenido.',
+        );
       return content;
     },
   };
 }
 
-function anthropicProvider(key: string, model: string, timeoutMs: number): ModelProvider {
+function anthropicProvider(
+  key: string,
+  model: string,
+  timeoutMs: number,
+): ModelProvider {
   return {
     name: 'anthropic',
     model,
@@ -103,11 +137,25 @@ function anthropicProvider(key: string, model: string, timeoutMs: number): Model
       }).catch((error: unknown) => {
         throw mapFetchError(error, signal);
       });
-      if (response.status === 429) throw new ProviderError('rate_limit', 'El proveedor limitó las solicitudes.');
-      if (!response.ok) throw new ProviderError('network', `El proveedor respondió ${response.status}.`);
-      const body = (await response.json()) as { content?: { text?: string }[] };
+      if (response.status === 429)
+        throw new ProviderError(
+          'rate_limit',
+          'El proveedor limitó las solicitudes.',
+        );
+      if (!response.ok)
+        throw new ProviderError(
+          'network',
+          `El proveedor respondió ${response.status}.`,
+        );
+      const body = (await readProviderJson(response)) as {
+        content?: { text?: string }[];
+      };
       const content = body.content?.map((item) => item.text ?? '').join('');
-      if (!content) throw new ProviderError('invalid_response', 'El proveedor no devolvió contenido.');
+      if (!content)
+        throw new ProviderError(
+          'invalid_response',
+          'El proveedor no devolvió contenido.',
+        );
       return content;
     },
   };
@@ -115,7 +163,8 @@ function anthropicProvider(key: string, model: string, timeoutMs: number): Model
 
 function mapFetchError(error: unknown, signal: AbortSignal): ProviderError {
   if (error instanceof ProviderError) return error;
-  if (signal.aborted) return new ProviderError('aborted', 'La solicitud fue cancelada.');
+  if (signal.aborted)
+    return new ProviderError('aborted', 'La solicitud fue cancelada.');
   if (error instanceof Error && error.name === 'TimeoutError') {
     return new ProviderError('timeout', 'El proveedor no respondió a tiempo.');
   }
@@ -129,4 +178,27 @@ export function extractJson(text: string): unknown {
   const trimmed = text.trim();
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(trimmed);
   return JSON.parse(fenced?.[1] ?? trimmed) as unknown;
+}
+
+/** Bounds streamed provider responses, including those without Content-Length. */
+export async function readProviderJson(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader)
+    throw new ProviderError('invalid_response', 'Empty provider response.');
+  let size = 0;
+  const chunks: Uint8Array[] = [];
+  while (true) {
+    const part = await reader.read();
+    if (part.done) break;
+    size += part.value.length;
+    if (size > 65536) {
+      await reader.cancel();
+      throw new ProviderError(
+        'invalid_response',
+        'Provider response too large.',
+      );
+    }
+    chunks.push(part.value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8')) as unknown;
 }

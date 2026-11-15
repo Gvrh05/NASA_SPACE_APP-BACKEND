@@ -402,6 +402,14 @@ export const actionSchema = z.discriminatedUnion('type', [
     .strict(),
   z
     .object({
+      type: z.literal('updateCommunicationDraft'),
+      id,
+      subject: z.string().min(3).max(180),
+      body: z.string().min(3).max(4000),
+    })
+    .strict(),
+  z
+    .object({
       type: z.literal('transitionCommunication'),
       id,
       status: commStatus,

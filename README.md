@@ -152,3 +152,13 @@ Se consultaron Human Research Roadmap y las publicaciones oficiales de OSDR para
 ## DONKI, RadLab y OSDR
 
 NASA environmental integration is separate from simulation and medical alerts. See [contracts, verified sources, configuration and tests](docs/NASA-INTEGRATION.md). Configure NASA_API_KEY exclusively in this backend.
+
+## Seguridad del prototipo
+
+Request limits, route-specific JSON limits, safe errors and minimal request logs are enabled by SecurityModule. AI responses remain advisory and cannot mutate sessions. See [controls, tests and limitations](docs/SECURITY.md) and [test results](docs/security-regression.json).
+
+### Editar comunicaciones en borrador
+
+`POST /api/simulation/actions` admite `action: { type: "updateCommunicationDraft", id, subject, body }` dentro del sobre existente con `requestId` y `expectedRevision`. Asunto: 3–180 caracteres; cuerpo: 3–4000. Se recortan espacios exteriores y no se acepta contenido que quede vacío o demasiado corto. Solo los roles simulados medical y ops pueden editar; el mensaje debe seguir en draft. Se mantienen identidad, destinatario, secuencia y fechas, y se añade un evento edit-communication-draft. Los reintentos conservan la idempotencia del sobre. No hay envío automático.
+
+Pruebas: `npm test -- --runInBand src/simulation/communication-draft.spec.ts`.

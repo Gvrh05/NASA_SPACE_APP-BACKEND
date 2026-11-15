@@ -29,6 +29,16 @@ export class AiController {
 
 function requestSignal(request: Request): AbortSignal {
   const controller = new AbortController();
-  request.on('aborted', () => controller.abort());
+  const abort = () => controller.abort();
+  request.once('aborted', abort);
+  const response = request.res;
+  const close = () => {
+    if (!response?.writableFinished) controller.abort();
+  };
+  response?.once('close', close);
+  response?.once('finish', () => {
+    request.off('aborted', abort);
+    response.off('close', close);
+  });
   return controller.signal;
 }

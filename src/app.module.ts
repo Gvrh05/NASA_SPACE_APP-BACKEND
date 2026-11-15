@@ -1,3 +1,4 @@
+import { SecurityModule } from './security/security.module';
 import { SimulationModule } from './simulation/simulation.module';
 import { AstronautsModule } from './astronauts/astronauts.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
@@ -13,6 +14,7 @@ import { AppService } from './app.service';
 
 @Module({
   imports: [
+    SecurityModule,
     AiModule,
     SimulationModule,
     AstronautsModule,
