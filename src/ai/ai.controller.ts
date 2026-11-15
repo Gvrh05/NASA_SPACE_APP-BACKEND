@@ -1,10 +1,14 @@
+import { SpaceConversationService } from './space-conversation.service';
 import { Body, Controller, Get, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { AiService } from './ai.service';
 
 @Controller('api/ai')
 export class AiController {
-  constructor(private readonly ai: AiService) {}
+  constructor(
+    private readonly ai: AiService,
+    private readonly conversation: SpaceConversationService,
+  ) {}
 
   @Get('health')
   health() {
@@ -23,7 +27,12 @@ export class AiController {
 
   @Post('space')
   space(@Body() body: unknown, @Req() request: Request) {
-    return this.ai.space(body, requestSignal(request));
+    return this.conversation.respond(
+      body,
+      String(request.headers['x-simulation-id'] ?? ''),
+      String(request.headers['x-space-token'] ?? ''),
+      requestSignal(request),
+    );
   }
 }
 

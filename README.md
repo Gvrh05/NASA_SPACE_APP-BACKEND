@@ -193,3 +193,11 @@ Request limits, route-specific JSON limits, safe errors and minimal request logs
 `POST /api/simulation/actions` admite `action: { type: "updateCommunicationDraft", id, subject, body }` dentro del sobre existente con `requestId` y `expectedRevision`. Asunto: 3–180 caracteres; cuerpo: 3–4000. Se recortan espacios exteriores y no se acepta contenido que quede vacío o demasiado corto. Solo los roles simulados medical y ops pueden editar; el mensaje debe seguir en draft. Se mantienen identidad, destinatario, secuencia y fechas, y se añade un evento edit-communication-draft. Los reintentos conservan la idempotencia del sobre. No hay envío automático.
 
 Pruebas: `npm test -- --runInBand src/simulation/communication-draft.spec.ts`.
+
+## Mi espacio y Quir?n Bot
+
+Permisos de modelo ligados a la sesi?n simulada, memoria reciente acotada y cuatro herramientas de solo lectura. Ver [contratos, archivos, pruebas y l?mites de seguridad](docs/MI-ESPACIO.md).
+
+## Plan maestro implementado
+
+[Paridad, evidencia explicable, siete herramientas, demo guiada y controles de privacidad](docs/PLAN-IMPLEMENTADO.md).

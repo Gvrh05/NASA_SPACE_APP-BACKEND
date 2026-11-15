@@ -1,3 +1,8 @@
+import type {
+  ConversationInput,
+  ConversationOutput,
+} from './space-conversation.contract';
+import type { ModelProvider } from './provider';
 import { crewById } from '../simulation/domain/crew';
 import { HttpException, Inject, Injectable, Optional } from '@nestjs/common';
 import {
@@ -125,6 +130,43 @@ export class AiService {
     messages: { system: string; user: string },
     signal: AbortSignal,
   ): Promise<string> {
+    return this.withBudget(async (provider) => {
+      const text = await provider.complete({ ...messages, signal });
+      if (Buffer.byteLength(text, 'utf8') > 16000)
+        this.fail(422, 'invalid_response', 'AI response exceeds allowed size');
+      return text;
+    });
+  }
+  async conversationTurn(
+    input: ConversationInput,
+  ): Promise<ConversationOutput> {
+    return this.withBudget(async (provider) => {
+      input.signal.throwIfAborted();
+      const operation = provider.converse
+        ? provider.converse(input)
+        : provider
+            .complete({
+              system: input.system,
+              user: JSON.stringify({
+                ...(JSON.parse(input.user) as Record<string, unknown>),
+                history: input.history,
+              }),
+              signal: input.signal,
+            })
+            .then((text) => ({ text, calls: [] }));
+      const result = await interruptible(operation, input.signal);
+      input.signal.throwIfAborted();
+      if (
+        Buffer.byteLength(JSON.stringify(result), 'utf8') > 32000 ||
+        result.calls.length > 4
+      )
+        this.fail(422, 'invalid_response', 'AI response exceeds allowed size');
+      return result;
+    });
+  }
+  private async withBudget<T>(
+    operation: (provider: ModelProvider) => Promise<T>,
+  ): Promise<T> {
     if (!this.resolved.provider) {
       throw new HttpException(
         {
@@ -149,17 +191,7 @@ export class AiService {
     this.calls += 1;
     this.inFlight += 1;
     try {
-      const text = await this.resolved.provider.complete({
-        ...messages,
-        signal,
-      });
-      if (Buffer.byteLength(text, 'utf8') > 16000)
-        this.fail(
-          422,
-          'invalid_response',
-          'AI response exceeds the allowed size.',
-        );
-      return text;
+      return await operation(this.resolved.provider);
     } catch (error) {
       if (error instanceof HttpException) throw error;
       if (error instanceof ProviderError) {
@@ -192,4 +224,42 @@ export class AiService {
   private fail(status: number, code: string, message: string): never {
     throw new HttpException({ code, message }, status);
   }
+}
+
+function interruptible<T>(
+  operation: Promise<T>,
+  signal: AbortSignal,
+): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const abort = () => {
+      const reason: unknown = signal.reason;
+      const timeout =
+        reason &&
+        typeof reason === 'object' &&
+        'name' in reason &&
+        reason.name === 'TimeoutError';
+      reject(
+        new ProviderError(
+          timeout ? 'timeout' : 'aborted',
+          'Conversation interrupted',
+        ),
+      );
+    };
+    signal.addEventListener('abort', abort, { once: true });
+    if (signal.aborted) abort();
+    operation.then(
+      (value) => {
+        signal.removeEventListener('abort', abort);
+        resolve(value);
+      },
+      (error) => {
+        signal.removeEventListener('abort', abort);
+        reject(
+          error instanceof Error
+            ? error
+            : new ProviderError('network', 'Provider failed'),
+        );
+      },
+    );
+  });
 }
