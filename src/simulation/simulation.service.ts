@@ -26,6 +26,7 @@ import { reduce, type Action } from './domain/reduce';
 import { createInitialState } from './domain/scenarios';
 import { addAudit } from './domain/stateOps';
 import { crewPosture, latestReliable } from './domain/selectors';
+import { simulatorStage, type SimulatorMissionContext } from '../platform/missionLink';
 import { DEMO_PROTOCOL_IDS } from './shared/protocols';
 import { CREW } from './domain/crew';
 import { ensureAlert } from './domain/messages';
@@ -68,6 +69,51 @@ export class SimulationService {
     };
     this.save(sessionId, stored);
     return this.snapshot(stored);
+  }
+
+  /** Copia nombre, etapa y tripulación de la plataforma solo cuando difieren. */
+  alignWithPlatform(sessionId: string, context: SimulatorMissionContext): SessionSnapshot {
+    const stored = this.read(sessionId);
+    const stage = simulatorStage(context.stage);
+    const mission = stored.state.mission;
+    const activities = context.activities.slice(0, 40).map((item) => item.slice(0, 200));
+    const same =
+      mission.id === context.id &&
+      mission.name === context.name.slice(0, 4000) &&
+      mission.destination === context.destination.slice(0, 4000) &&
+      mission.stage === stage &&
+      mission.durationDays === context.durationDays &&
+      mission.crewCount === context.crewCount &&
+      JSON.stringify(mission.activities) === JSON.stringify(activities);
+    if (same) return this.snapshot(stored);
+    return this.mutate(
+      sessionId,
+      randomUUID(),
+      stored.revision,
+      { type: 'align-platform-mission', missionId: context.id },
+      (state) => {
+        const next = {
+          ...state,
+          mission: {
+            ...state.mission,
+            id: context.id.slice(0, 3000),
+            name: context.name.slice(0, 4000),
+            destination: context.destination.slice(0, 4000),
+            stage,
+            durationDays: context.durationDays,
+            crewCount: context.crewCount,
+            activities,
+            stageChangedAt: state.mission.stage === stage ? state.mission.stageChangedAt : state.clock.simulatedAt,
+          },
+        };
+        return addAudit(next, {
+          actor: state.role,
+          action: 'align-platform-mission',
+          entityId: context.id.slice(0, 3000),
+          detail: stage,
+        });
+      },
+    );
   }
 
   get(sessionId: string): SessionSnapshot {

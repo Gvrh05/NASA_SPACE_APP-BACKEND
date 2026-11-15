@@ -55,9 +55,13 @@ pids
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
-# Datos ficticios persistidos por sesi?n
+# Datos ficticios persistidos por sesión (incluye platform-db y sesiones)
 /data/
+**/platform-db.json
+**/sessions/
+*.session.json
 
 # All local environment variants; examples remain tracked.
+.env
 .env.*
 !.env.example

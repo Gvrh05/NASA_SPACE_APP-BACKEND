@@ -26,11 +26,21 @@ export type DemoSession = {
   expiresAt: number
 }
 
+/** Mission habitat / vehicle context (demo taxonomy — not clinical thresholds). */
+export type MissionEnvironment =
+  | 'spacecraft'
+  | 'space_station'
+  | 'rover'
+  | 'surface_base'
+  | 'training'
+
 export type Mission = {
   id: string
   code: string
   name: string
   destination: string
+  /** Habitat/vehicle context for copy and prep — does not invent medical thresholds. */
+  environment: MissionEnvironment
   stage: MissionStage
   plannedStart: string | null
   durationDays: number
@@ -40,8 +50,10 @@ export type Mission = {
   commsNotes: string
   storageNotes: string
   prepPercent: number
-  /** When true, crew roster is frozen (no new members / role changes). Set after saving AI prep checklist. */
+  /** When true, crew roster is frozen (no new members). Set when the mission deploys (aboard). */
   rosterLocked: boolean
+  /** When true, plan/crew changed since last analysis — chief must run Analizar again before takeoff. */
+  analysisStale: boolean
   createdBy: string
   createdAt: number
   updatedAt: number
@@ -145,6 +157,43 @@ export type SymptomReport = {
   intensity: number | null
   context: string
   source: string
+  /** Optional body region id for body-map linking (e.g. head, chest, abdomen). */
+  bodyRegion: string | null
+  createdAt: number
+}
+
+export type IndicatorKind =
+  | 'heart_rate'
+  | 'blood_pressure'
+  | 'spo2'
+  | 'glucose'
+  | 'temperature'
+  | 'respiratory_rate'
+  | 'sleep_hours'
+  | 'mood'
+
+export type IndicatorOrigin = 'manual' | 'sensor' | 'import' | 'simulation'
+export type IndicatorQuality = 'good' | 'fair' | 'poor' | 'unknown'
+
+/** Manual or imported health indicator reading (platform care layer). */
+export type HealthIndicatorReading = {
+  id: string
+  missionId: string
+  profileId: string
+  kind: IndicatorKind
+  measuredAt: number
+  /** Primary value. For blood_pressure this is systolic (mmHg). */
+  value: number
+  /** Secondary value. For blood_pressure this is diastolic (mmHg). */
+  valueSecondary: number | null
+  unit: string
+  origin: IndicatorOrigin
+  context: string
+  quality: IndicatorQuality
+  /** Age after which UI should flag the reading as stale (ms). */
+  staleAfterMs: number
+  notes: string
+  bodyRegion: string | null
   createdAt: number
 }
 
@@ -214,6 +263,7 @@ export type PlatformDb = {
   wakeChecks: WakeCheck[]
   sleepEpisodes: SleepEpisode[]
   symptomReports: SymptomReport[]
+  healthIndicators: HealthIndicatorReading[]
   conversations: Conversation[]
   conversationSummaries: ConversationSummary[]
   appointments: Appointment[]
