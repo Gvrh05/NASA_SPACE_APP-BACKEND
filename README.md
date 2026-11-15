@@ -44,7 +44,7 @@ El backend carga su propio .env y respeta variables ya definidas en el proceso. 
 
 El motor en src/simulation/domain proviene del dominio React. Los archivos conservados en React permiten ejecutar el simulador local cuando falta la API. Las pruebas de paridad comparan reglas y escenarios con el repositorio hermano, cuando está disponible. No se añadieron dependencias de ejecución.
 
-El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 45 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable. Tres cifras idénticas del mismo sensor quedan pendientes de verificación.
+El indicador observado conserva la regla previa basada en frecuencia cardíaca y síntomas. Las cinco magnitudes ofrecen comparaciones numéricas contra la línea base. La ausencia de evidencia produce no_recent_evaluation. Los signos se consideran recientes durante 30 minutos, el sueño durante 36 horas y un retraso de recepción superior a 30 minutos marca la lectura como antigua. Una serie de tres valores idénticos del mismo sensor se excluye de la lectura confiable como posible sensor congelado. Las lecturas futuras y de calidad cero quedan fuera de la evidencia confiable. Tres cifras idénticas del mismo sensor quedan pendientes de verificación.
 
 ## Telemetría simulada
 
