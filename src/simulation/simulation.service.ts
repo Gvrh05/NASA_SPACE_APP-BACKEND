@@ -52,6 +52,23 @@ const storedSchema = z
   })
   .strict();
 
+function keepOpenEpisodesInFlight(state: AppState): AppState {
+  if (
+    state.mission.stage !== 'posmision' ||
+    !state.episodes.some((episode) => episode.status !== 'closed')
+  ) {
+    return state;
+  }
+  return {
+    ...state,
+    mission: {
+      ...state.mission,
+      stage: 'a_bordo',
+      stageChangedAt: state.clock.simulatedAt,
+    },
+  };
+}
+
 @Injectable()
 export class SimulationService {
   private readonly directory = resolve(
@@ -63,7 +80,9 @@ export class SimulationService {
     if (existsSync(this.file(sessionId))) return this.get(sessionId);
     const stored: StoredSession = {
       version: 1,
-      state: body.initialState ?? createInitialState(body.scenarioId),
+      state: keepOpenEpisodesInFlight(
+        body.initialState ?? createInitialState(body.scenarioId),
+      ),
       revision: 0,
       requests: {},
     };
@@ -74,7 +93,14 @@ export class SimulationService {
   /** Copia nombre, etapa y tripulación de la plataforma solo cuando difieren. */
   alignWithPlatform(sessionId: string, context: SimulatorMissionContext): SessionSnapshot {
     const stored = this.read(sessionId);
-    const stage = simulatorStage(context.stage);
+    const requestedStage = simulatorStage(context.stage);
+    const hasOpenEpisodes = stored.state.episodes.some(
+      (episode) => episode.status !== 'closed',
+    );
+    const stage =
+      requestedStage === 'posmision' && hasOpenEpisodes
+        ? 'a_bordo'
+        : requestedStage;
     const mission = stored.state.mission;
     const activities = context.activities.slice(0, 40).map((item) => item.slice(0, 200));
     const same =
@@ -305,7 +331,12 @@ export class SimulationService {
     if (!existsSync(file))
       throw new NotFoundException('Inicializa la sesión de simulación');
     // Un archivo dañado genera un error y se conserva para recuperación.
-    return storedSchema.parse(JSON.parse(readFileSync(file, 'utf8')));
+    const stored = storedSchema.parse(JSON.parse(readFileSync(file, 'utf8')));
+    const state = keepOpenEpisodesInFlight(stored.state);
+    if (state === stored.state) return stored;
+    const migrated = { ...stored, state, revision: stored.revision + 1 };
+    this.save(sessionId, migrated);
+    return migrated;
   }
   private save(sessionId: string, stored: StoredSession) {
     mkdirSync(this.directory, { recursive: true });

@@ -80,7 +80,7 @@ export const QUIRON_PUBLIC_FACTS = [
   {
     id: 'helios',
     label: 'HELIOS · proyecto',
-    data: 'HELIOS means Health Evaluation & Life Indicators Observation System. Independent fictional space-health prototype, not operated or endorsed by NASA. Mission stages: pre-flight, aboard, post-mission.',
+    data: 'HELIOS means Health Evaluation & Life Indicators Observation System. Independent fictional space-health prototype, not operated or endorsed by NASA. Mission stages: Preflight, In Flight, and Completed.',
   },
   {
     id: 'features',

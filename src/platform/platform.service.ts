@@ -1,7 +1,11 @@
 import { BadRequestException, ForbiddenException, Injectable, NotFoundException, UnauthorizedException, ConflictException, type OnModuleInit } from '@nestjs/common'
 import { randomBytes } from 'node:crypto'
 import { buildMissionPrepChecklist } from './prepPlan'
-import { computePrepPercent, isPrepItemComplete, nid } from './seed'
+import { computePrepPercent, nid } from './seed'
+import { applyAdministrativeClose, applyStart, evaluateStartOn } from './missionTransitions'
+import { buildMissionReview, canSeeAppointment, presentAppointment } from './review'
+import { parsePainBody, symptomSummary } from './pain-map'
+import { stageAllows, stageDeniedMessage, type StageAction } from './stagePolicy'
 import { type SimulatorMissionContext } from './missionLink'
 import { PlatformStore } from './platform.store'
 import { localCareReply } from './quiron-local'
@@ -11,6 +15,8 @@ import type {
   DemoRole,
   HealthGrant,
   HealthIndicatorReading,
+  PainFollowUp,
+  PainMapReport,
   Mission,
   MissionEnvironment,
   MissionStage,
@@ -93,7 +99,7 @@ export class PlatformService implements OnModuleInit {
   simulatorContext(profile: Profile, missionId: string): SimulatorMissionContext {
     this.requireMembership(profile, missionId)
     const mission = this.store.get().missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
+    if (!mission) throw new NotFoundException('Mission not found')
     const crewCount = this.store.get().memberships.filter(
       (item) => item.missionId === missionId && item.status === 'active' && item.role !== 'ops',
     ).length
@@ -128,7 +134,7 @@ export class PlatformService implements OnModuleInit {
 
   selectProfile(profileId: string) {
     const profile = this.store.get().profiles.find((item) => item.id === profileId)
-    if (!profile) throw new NotFoundException('Perfil demo no encontrado')
+    if (!profile) throw new NotFoundException('Demo profile not found')
     const token = randomBytes(24).toString('hex')
     const now = Date.now()
     this.store.mutate((db) => {
@@ -140,12 +146,12 @@ export class PlatformService implements OnModuleInit {
   }
 
   requireSession(token: string | undefined): Profile {
-    if (!token) throw new UnauthorizedException('Seleccioná un perfil demo')
+    if (!token) throw new UnauthorizedException('Select a demo profile')
     const now = Date.now()
     const session = this.store.get().sessions.find((item) => item.token === token && item.expiresAt > now)
-    if (!session) throw new UnauthorizedException('Sesión demo expirada')
+    if (!session) throw new UnauthorizedException('Demo session expired')
     const profile = this.store.get().profiles.find((item) => item.id === session.profileId)
-    if (!profile) throw new UnauthorizedException('Perfil inválido')
+    if (!profile) throw new UnauthorizedException('Invalid profile')
     return profile
   }
 
@@ -163,7 +169,7 @@ export class PlatformService implements OnModuleInit {
     this.requireMembership(profile, missionId)
     const db = this.store.get()
     const mission = db.missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
+    if (!mission) throw new NotFoundException('Mission not found')
     const members = db.memberships.filter((item) => item.missionId === missionId)
     const prepItems = db.prepItems.filter((item) => item.missionId === missionId)
     return { mission, members, prepItems, prepPercent: computePrepPercent(prepItems) }
@@ -188,20 +194,27 @@ export class PlatformService implements OnModuleInit {
     const mission: Mission = {
       id,
       code,
-      name: input.name.trim() || 'Nueva misión',
+      name: input.name.trim() || 'New mission',
       destination: input.destination?.trim() || '',
       environment,
       stage: 'draft',
       plannedStart: input.plannedStart ?? null,
+      actualStart: null,
+      actualReturn: null,
       durationDays: input.durationDays ?? 30,
       plannedCrewCount: Math.max(1, input.plannedCrewCount ?? 4),
       timezone: input.timezone || 'UTC',
+      wakeHourUtc: 6,
       activities: input.activities ?? [],
       commsNotes: input.commsNotes ?? '',
       storageNotes: input.storageNotes ?? '',
       prepPercent: 0,
       rosterLocked: false,
       analysisStale: true,
+      demoKey: null,
+      simulated: false,
+      closedAt: null,
+      closedBy: null,
       createdBy: profile.id,
       createdAt: now,
       updatedAt: now,
@@ -210,16 +223,6 @@ export class PlatformService implements OnModuleInit {
       db.missions.push(mission)
       db.memberships.push({ id: nid(), missionId: id, profileId: profile.id, role: 'chief', status: 'active', createdAt: now })
       db.invitations.push({ id: nid(), missionId: id, code, invitedRole: 'crew', requestedBy: null, status: 'open', createdAt: now })
-      db.prepItems.push(
-        ...starterPrep(
-          id,
-          now,
-          profile.id,
-          mission.plannedCrewCount,
-          mission.durationDays,
-        ),
-      )
-      mission.prepPercent = computePrepPercent(db.prepItems.filter((item) => item.missionId === id))
       db.accessAudit.push({ id: nid(), missionId: id, actorProfileId: profile.id, action: 'mission-create', detail: mission.name, createdAt: now })
     })
     return this.getMission(profile, id)
@@ -235,12 +238,21 @@ export class PlatformService implements OnModuleInit {
     return null
   }
 
-  /** Checklist solo en borrador/preembarque. Tras despegue queda cerrado a la fuerza. */
+  /** Checklist edits only while preparation is open. */
   private assertChecklistOpen(mission: Mission) {
-    if (mission.stage === 'draft' || mission.stage === 'preflight') return
-    throw new BadRequestException(
-      'Checklist cerrado: la misión ya desplegó o está en posmisión. No se puede volver a editar ni reabrir el paso de preparación.',
-    )
+    this.requireAction(mission, 'prep_write')
+  }
+
+  private requireAction(mission: Mission, action: StageAction) {
+    if (!stageAllows(mission.stage, action)) {
+      throw new BadRequestException(stageDeniedMessage(action, mission.stage))
+    }
+  }
+
+  private missionIn(db: { missions: Mission[] }, missionId: string) {
+    const mission = db.missions.find((item) => item.id === missionId)
+    if (!mission) throw new NotFoundException('Mission not found')
+    return mission
   }
 
   private isDeployedStage(stage: MissionStage) {
@@ -254,10 +266,10 @@ export class PlatformService implements OnModuleInit {
 
   requestJoin(profile: Profile, code: string, requestedRole: Exclude<DemoRole, 'chief'> = 'crew') {
     const normalized = code.trim().toUpperCase()
-    if (!normalized) throw new BadRequestException('Código requerido')
+    if (!normalized) throw new BadRequestException('Code required')
     const db = this.store.get()
     const mission = db.missions.find((item) => item.code.toUpperCase() === normalized)
-    if (!mission) throw new NotFoundException('No hay misión con ese código. El código no revela datos de salud.')
+    if (!mission) throw new NotFoundException('No mission matches that code. The code does not reveal health data.')
     const blocked = this.crewAddsBlocked(mission)
     if (blocked) throw new BadRequestException(blocked)
     const existing = db.memberships.find((item) => item.missionId === mission.id && item.profileId === profile.id)
@@ -304,14 +316,14 @@ export class PlatformService implements OnModuleInit {
       missionId: mission.id,
       membershipId,
       status: 'pending' as const,
-      note: 'Solicitud enviada. Conocer el código no otorga acceso a salud ni roles privilegiados.',
+      note: 'Request sent. Knowing the code does not grant access to health data or privileged roles.',
     }
   }
 
   decideJoin(chief: Profile, missionId: string, membershipId: string, accept: boolean) {
     this.requireRole(chief, missionId, ['chief'])
     const mission = this.store.get().missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
+    if (!mission) throw new NotFoundException('Mission not found')
     if (accept) {
       const blocked = this.crewAddsBlocked(mission)
       if (blocked) throw new BadRequestException(blocked)
@@ -320,7 +332,7 @@ export class PlatformService implements OnModuleInit {
     this.store.mutate((db) => {
       const current = db.missions.find((item) => item.id === missionId)
       const membership = db.memberships.find((item) => item.id === membershipId && item.missionId === missionId)
-      if (!membership) throw new NotFoundException('Solicitud no encontrada')
+      if (!membership) throw new NotFoundException('Request not found')
       membership.status = accept ? 'active' : 'left'
       if (accept && current && (current.stage === 'draft' || current.stage === 'preflight')) {
         current.analysisStale = true
@@ -342,10 +354,8 @@ export class PlatformService implements OnModuleInit {
     this.requireRole(profile, missionId, ['chief', 'ops'])
     this.store.mutate((db) => {
       const mission = db.missions.find((item) => item.id === missionId)
-      if (!mission) throw new NotFoundException('Misión no encontrada')
-      if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
-        throw new BadRequestException('Solo se editan datos generales en borrador o preembarque')
-      }
+      if (!mission) throw new NotFoundException('Mission not found')
+      this.requireAction(mission, 'configure')
       const nextDays = patch.durationDays ?? mission.durationDays
       const nextCrew = patch.plannedCrewCount ?? mission.plannedCrewCount
       const planChanged = nextDays !== mission.durationDays || nextCrew !== mission.plannedCrewCount
@@ -393,14 +403,15 @@ export class PlatformService implements OnModuleInit {
   upsertPrep(profile: Profile, missionId: string, item: Partial<PrepItem> & { id?: string; title: string; category: string }) {
     this.requireRole(profile, missionId, ['chief', 'ops', 'medic'])
     const missionGate = this.store.get().missions.find((row) => row.id === missionId)
-    if (!missionGate) throw new NotFoundException('Misión no encontrada')
+    if (!missionGate) throw new NotFoundException('Mission not found')
     this.assertChecklistOpen(missionGate)
     const now = Date.now()
     return this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'prep_write')
       const existing = item.id ? db.prepItems.find((row) => row.id === item.id && row.missionId === missionId) : undefined
       if (existing) {
         if (existing.critical && item.critical === false) {
-          throw new BadRequestException('No se puede bajar criticidad sin justificación versionada en este prototipo')
+          throw new BadRequestException('Criticality cannot be reduced without a versioned justification in this prototype')
         }
         Object.assign(existing, {
           title: item.title,
@@ -443,7 +454,7 @@ export class PlatformService implements OnModuleInit {
           category: item.category,
           title: item.title,
           description: item.description ?? '',
-          source: item.source ?? 'Planificación HELIOS',
+          source: item.source ?? 'HELIOS planning',
           ownerProfileId: profile.id,
           qtyRequired: item.qtyRequired ?? null,
           qtyAvailable: item.qtyAvailable ?? null,
@@ -468,9 +479,9 @@ export class PlatformService implements OnModuleInit {
   suggestPrep(profile: Profile, missionId: string) {
     this.requireRole(profile, missionId, ['chief', 'ops'])
     const mission = this.store.get().missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
+    if (!mission) throw new NotFoundException('Mission not found')
     if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
-      throw new BadRequestException('El análisis de IA de checklist solo está disponible antes del despliegue (borrador o preembarque).')
+      throw new BadRequestException('AI checklist analysis is only available before deployment (Draft or Preflight).')
     }
     const plan = buildMissionPrepChecklist(
       mission.plannedCrewCount,
@@ -505,7 +516,7 @@ export class PlatformService implements OnModuleInit {
   commitAiPrep(profile: Profile, missionId: string, titles?: string[]) {
     this.requireRole(profile, missionId, ['chief', 'ops'])
     const mission = this.store.get().missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
+    if (!mission) throw new NotFoundException('Mission not found')
     if (mission.stage !== 'draft' && mission.stage !== 'preflight') {
       throw new BadRequestException('Solo se puede analizar antes del despliegue.')
     }
@@ -513,11 +524,12 @@ export class PlatformService implements OnModuleInit {
     const selected = titles?.length
       ? suggestions.filter((item) => titles.includes(item.title))
       : suggestions
-    if (!selected.length) throw new BadRequestException('No hay ítems de checklist para guardar')
+    if (!selected.length) throw new BadRequestException('There are no checklist items to save')
     const now = Date.now()
     this.store.mutate((db) => {
       const current = db.missions.find((item) => item.id === missionId)
-      if (!current) throw new NotFoundException('Misión no encontrada')
+      if (!current) throw new NotFoundException('Mission not found')
+      this.requireAction(current, 'begin_prep')
       const keepIds = new Set<string>()
       for (const item of selected) {
         const stableId = `${missionId}-plan-${item.key}`
@@ -604,61 +616,13 @@ export class PlatformService implements OnModuleInit {
   }
 
   evaluateStart(missionId: string) {
-    const db = this.store.get()
-    const mission = db.missions.find((item) => item.id === missionId)
-    if (!mission) throw new NotFoundException('Misión no encontrada')
-    const items = db.prepItems.filter((item) => item.missionId === missionId)
-    const percent = computePrepPercent(items)
-    const applicable = items.filter((item) => item.applies && item.status !== 'no_aplica')
-    const criticalPending = applicable.filter(
-      (item) => item.critical && !isPrepItemComplete(item),
-    )
-    const activeMembers = db.memberships.filter((item) => item.missionId === missionId && item.status === 'active')
-    /** Asientos de tripulación visibles: excluye mesa Ops. */
-    const crewSeats = activeMembers.filter((item) => item.role !== 'ops')
-    const blockers: string[] = []
-    if (mission.analysisStale) blockers.push('Hubo cambios desde el último análisis: volvé a analizar antes de despegar')
-    if (percent < 80) blockers.push(`Preparación ${percent}% < 80% (regla HELIOS: 80% o más para despegar)`)
-    if (criticalPending.length) blockers.push(`${criticalPending.length} crítico(s) sin verificar`)
-    if (crewSeats.length < 1) blockers.push('Sin integrantes activos')
-    if (crewSeats.length > mission.plannedCrewCount) blockers.push('Integrantes activos exceden la planificación')
-    return {
-      ok: blockers.length === 0,
-      percent,
-      analysisStale: Boolean(mission.analysisStale),
-      blockers,
-      criticalPending: criticalPending.map((item) => item.id),
-      activeMembers: crewSeats.length,
-      plannedCrewCount: mission.plannedCrewCount,
-      disclaimer: 'El 80% es regla HELIOS de simulación; no es certificación médica ni requisito NASA.',
-    }
+    return evaluateStartOn(this.store.get(), missionId)
   }
 
   startSimulatedMission(profile: Profile, missionId: string, confirm: boolean) {
     this.requireRole(profile, missionId, ['chief'])
-    if (!confirm) throw new BadRequestException('El jefe debe confirmar el comienzo')
-    const evaluation = this.evaluateStart(missionId)
-    if (!evaluation.ok) throw new BadRequestException({ message: 'No se puede iniciar', ...evaluation })
-    const now = Date.now()
-    this.store.mutate((db) => {
-      const mission = db.missions.find((item) => item.id === missionId)
-      if (!mission) throw new NotFoundException('Misión no encontrada')
-      const items = db.prepItems.filter((item) => item.missionId === missionId)
-      db.prepSnapshots.push({
-        id: nid(),
-        missionId,
-        percent: evaluation.percent,
-        payload: structuredClone(items),
-        confirmedBy: profile.id,
-        createdAt: now,
-      })
-      mission.stage = 'aboard'
-      mission.rosterLocked = true
-      mission.analysisStale = false
-      mission.prepPercent = evaluation.percent
-      mission.updatedAt = now
-      db.accessAudit.push({ id: nid(), missionId, actorProfileId: profile.id, action: 'start-simulated', detail: `${evaluation.percent}%`, createdAt: now })
-    })
+    if (!confirm) throw new BadRequestException('The Mission Commander must confirm the start')
+    const evaluation = this.store.mutate((db) => applyStart(db, missionId, profile.id, Date.now()))
     return { ...this.getMission(profile, missionId), evaluation }
   }
 
@@ -667,7 +631,12 @@ export class PlatformService implements OnModuleInit {
     if (stage === 'aboard') throw new BadRequestException('Usá startSimulatedMission para pasar a bordo')
     this.store.mutate((db) => {
       const mission = db.missions.find((item) => item.id === missionId)
-      if (!mission) throw new NotFoundException('Misión no encontrada')
+      if (!mission) throw new NotFoundException('Mission not found')
+      if (stage === 'postmission') {
+        this.requireAction(mission, 'close_mission')
+        applyAdministrativeClose(db, missionId, profile.id, Date.now())
+        return
+      }
       const order: MissionStage[] = [
         'draft',
         'preflight',
@@ -679,7 +648,6 @@ export class PlatformService implements OnModuleInit {
       const from = order.indexOf(mission.stage)
       const to = order.indexOf(stage)
       if (to < 0) throw new BadRequestException('Etapa inválida')
-      // Forzado: nunca reabrir checklist después del despegue.
       if (this.isDeployedStage(mission.stage) && (stage === 'draft' || stage === 'preflight')) {
         throw new BadRequestException(
           'Checklist cerrado de forma definitiva. No se puede volver a preembarque ni reabrir la preparación.',
@@ -710,8 +678,10 @@ export class PlatformService implements OnModuleInit {
     this.requireMembership(profile, missionId)
     const periodKey = new Date().toISOString().slice(0, 10)
     const db = this.store.get()
+    const mission = this.missionIn(db, missionId)
     let check = db.wakeChecks.find((item) => item.missionId === missionId && item.profileId === profile.id && item.periodKey === periodKey)
-    if (!check) {
+    const writable = stageAllows(mission.stage, 'clinical_write')
+    if (!check && writable) {
       const now = Date.now()
       check = {
         id: nid(),
@@ -722,15 +692,29 @@ export class PlatformService implements OnModuleInit {
         payload: {},
         createdAt: now,
       }
-      this.store.mutate((store) => store.wakeChecks.push(check as WakeCheck))
+      this.store.mutate((store) => {
+        const current = this.missionIn(store, missionId)
+        this.requireAction(current, 'clinical_write')
+        const already = store.wakeChecks.find((item) => item.missionId === missionId && item.profileId === profile.id && item.periodKey === periodKey)
+        if (!already) store.wakeChecks.push(check as WakeCheck)
+      })
     }
-    return { check, justWoke, note: check.status === 'pending' ? 'Sin completar' : check.status }
+    const hour = new Date().getUTCHours()
+    const prompt = writable && check?.status === 'pending' && (justWoke || hour >= (mission.wakeHourUtc ?? 6))
+    return {
+      check: check || null,
+      justWoke,
+      readOnly: !writable,
+      prompt,
+      note: !check ? 'read_only' : check.status === 'pending' ? 'Incomplete' : check.status,
+    }
   }
 
   completeWakeCheck(profile: Profile, missionId: string, payload: Record<string, unknown>) {
     this.requireMembership(profile, missionId)
     const periodKey = new Date().toISOString().slice(0, 10)
     this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
       let check = db.wakeChecks.find((item) => item.missionId === missionId && item.profileId === profile.id && item.periodKey === periodKey)
       if (!check) {
         check = { id: nid(), missionId, profileId: profile.id, periodKey, status: 'completed', payload, createdAt: Date.now() }
@@ -770,14 +754,7 @@ export class PlatformService implements OnModuleInit {
 
   addSleep(profile: Profile, missionId: string, startAt: number, endAt: number, quality: number | null, kind = 'nap') {
     this.requireMembership(profile, missionId)
-    if (!(endAt > startAt)) throw new BadRequestException('Intervalo inválido')
-    const db = this.store.get()
-    const overlap = db.sleepEpisodes.some((item) =>
-      item.missionId === missionId &&
-      item.profileId === profile.id &&
-      startAt < item.endAt &&
-      endAt > item.startAt)
-    if (overlap) throw new BadRequestException('El intervalo se solapa con otro episodio de sueño')
+    if (!(endAt > startAt)) throw new BadRequestException('Invalid interval')
     const episode: SleepEpisode = {
       id: nid(),
       missionId,
@@ -788,7 +765,16 @@ export class PlatformService implements OnModuleInit {
       kind,
       createdAt: Date.now(),
     }
-    this.store.mutate((store) => store.sleepEpisodes.push(episode))
+    this.store.mutate((store) => {
+      this.requireAction(this.missionIn(store, missionId), 'clinical_write')
+      const clash = store.sleepEpisodes.some((item) =>
+        item.missionId === missionId &&
+        item.profileId === profile.id &&
+        startAt < item.endAt &&
+        endAt > item.startAt)
+      if (clash) throw new BadRequestException('This interval overlaps another sleep episode')
+      store.sleepEpisodes.push(episode)
+    })
     return episode
   }
 
@@ -799,8 +785,9 @@ export class PlatformService implements OnModuleInit {
     return this.store.get().sleepEpisodes.filter((item) => item.missionId === missionId && item.profileId === target)
   }
 
-  addSymptom(profile: Profile, missionId: string, input: Omit<SymptomReport, 'id' | 'missionId' | 'profileId' | 'createdAt'>) {
+  addSymptom(profile: Profile, missionId: string, input: Omit<SymptomReport, 'id' | 'missionId' | 'profileId' | 'createdAt' | 'status'> & { status?: SymptomReport['status'] }) {
     this.requireMembership(profile, missionId)
+    if (!input.description?.trim()) throw new BadRequestException('El síntoma necesita una descripción')
     const row: SymptomReport = {
       id: nid(),
       missionId,
@@ -811,9 +798,13 @@ export class PlatformService implements OnModuleInit {
       context: input.context || '',
       source: input.source || 'self_report',
       bodyRegion: input.bodyRegion ?? null,
+      status: input.status || 'open',
       createdAt: Date.now(),
     }
-    this.store.mutate((db) => db.symptomReports.push(row))
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      db.symptomReports.push(row)
+    })
     return row
   }
 
@@ -822,6 +813,193 @@ export class PlatformService implements OnModuleInit {
     const target = subjectId || profile.id
     if (target !== profile.id) this.requireHealthAccess(profile, missionId, target, 'symptoms')
     return this.store.get().symptomReports.filter((item) => item.missionId === missionId && item.profileId === target)
+  }
+
+  /**
+   * Pain maps use the symptoms grant. The chief does not receive them by role.
+   * Clinical notes are returned only to the person and to a medic with that grant.
+   */
+  listPainMaps(profile: Profile, missionId: string, subjectId?: string) {
+    this.requireMembership(profile, missionId)
+    const target = subjectId || profile.id
+    if (target !== profile.id) this.requireHealthAccess(profile, missionId, target, 'symptoms')
+    const role = this.membership(profile.id, missionId)?.role
+    const showNotes = profile.id === target || role === 'medic'
+    return (this.store.get().painReports ?? [])
+      .filter((item) => item.missionId === missionId && item.profileId === target)
+      .sort((a, b) => b.createdAt - a.createdAt)
+      .map((item) => (showNotes ? item : { ...item, clinicalNotes: [] }))
+  }
+
+  createPainMap(profile: Profile, missionId: string, input: unknown) {
+    this.requireMembership(profile, missionId)
+    const parsed = parsePainBody(input)
+    const now = Date.now()
+    const summary = symptomSummary(parsed.marks)
+    const symptomId = nid()
+    const report: PainMapReport = {
+      id: nid(),
+      missionId,
+      profileId: profile.id,
+      symptomReportId: symptomId,
+      appointmentId: null,
+      modelId: parsed.modelId,
+      modelVersion: parsed.modelVersion,
+      origin: 'self_report',
+      status: 'open',
+      marks: parsed.marks,
+      revisions: [{ at: now, actorProfileId: profile.id, action: 'created', note: '', marks: parsed.marks }],
+      clinicalNotes: [],
+      followsReportId: null,
+      createdAt: now,
+      updatedAt: now,
+    }
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      if (parsed.followsReportId) {
+        const prior = db.painReports.find((item) => item.id === parsed.followsReportId && item.missionId === missionId && item.profileId === profile.id)
+        if (!prior) throw new BadRequestException('The earlier report does not exist')
+        report.followsReportId = prior.id
+      }
+      report.appointmentId = this.bindPainAppointment(db, missionId, profile.id, parsed.appointmentId)
+      db.symptomReports.push({
+        id: symptomId,
+        missionId,
+        profileId: profile.id,
+        description: summary.description,
+        startedAt: summary.startedAt,
+        intensity: summary.intensity,
+        context: summary.context,
+        source: 'self_report',
+        bodyRegion: summary.bodyRegion,
+        status: 'open',
+        createdAt: now,
+      })
+      db.painReports.push(report)
+    })
+    return report
+  }
+
+  private savedPain(report: PainMapReport | undefined): PainMapReport {
+    if (!report) throw new BadRequestException('Invalid pain report')
+    return report
+  }
+
+  correctPainMap(profile: Profile, missionId: string, reportId: string, input: unknown) {
+    this.requireMembership(profile, missionId)
+    const parsed = parsePainBody(input)
+    let updated: PainMapReport | undefined
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      const report = db.painReports.find((item) => item.id === reportId && item.missionId === missionId)
+      if (!report || report.profileId !== profile.id) throw new ForbiddenException('Only the person who reported this map can correct it')
+      const now = Date.now()
+      report.revisions.push({ at: now, actorProfileId: profile.id, action: 'corrected', note: '', marks: parsed.marks })
+      report.marks = parsed.marks
+      report.updatedAt = now
+      if (parsed.appointmentId) report.appointmentId = this.bindPainAppointment(db, missionId, profile.id, parsed.appointmentId)
+      const summary = symptomSummary(parsed.marks)
+      const symptom = db.symptomReports.find((item) => item.id === report.symptomReportId)
+      if (symptom) {
+        symptom.description = summary.description
+        symptom.startedAt = summary.startedAt
+        symptom.intensity = summary.intensity
+        symptom.context = summary.context
+        symptom.bodyRegion = summary.bodyRegion
+      }
+      updated = report
+    })
+    return this.savedPain(updated)
+  }
+
+  setPainStatus(profile: Profile, missionId: string, reportId: string, status: string) {
+    this.requireMembership(profile, missionId)
+    if (status !== 'open' && status !== 'monitoring' && status !== 'resolved') {
+      throw new BadRequestException('Invalid follow-up status')
+    }
+    const next = status as PainFollowUp
+    let updated: PainMapReport | undefined
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      const report = db.painReports.find((item) => item.id === reportId && item.missionId === missionId)
+      if (!report || report.profileId !== profile.id) throw new ForbiddenException('Only the person who reported this map can correct it')
+      const previous = report.status
+      if (previous === next) {
+        updated = report
+        return
+      }
+      const now = Date.now()
+      report.revisions.push({
+        at: now,
+        actorProfileId: profile.id,
+        action: 'status',
+        note: `${previous} -> ${next}`,
+        marks: report.marks,
+      })
+      report.status = next
+      report.updatedAt = now
+      const symptom = db.symptomReports.find((item) => item.id === report.symptomReportId)
+      if (symptom) symptom.status = next
+      updated = report
+    })
+    return this.savedPain(updated)
+  }
+
+  addPainClinicalNote(profile: Profile, missionId: string, reportId: string, body: string, appointmentId?: string | null) {
+    this.requireMembership(profile, missionId)
+    const noteBody = body.trim()
+    if (noteBody.length < 3 || noteBody.length > 2000) throw new BadRequestException('The clinical note cannot be empty')
+    const existing = this.store.get().painReports.find((item) => item.id === reportId && item.missionId === missionId)
+    if (!existing) throw new NotFoundException('Pain report not found')
+    if (existing.profileId === profile.id) {
+      throw new ForbiddenException('The physician writes the clinical note. It does not replace the self-report')
+    }
+    if (this.membership(profile.id, missionId)?.role !== 'medic') {
+      throw new ForbiddenException('Only the mission physician can add a clinical note')
+    }
+    this.requireHealthAccess(profile, missionId, existing.profileId, 'symptoms')
+    const marksBefore = JSON.stringify(existing.marks)
+    let updated: PainMapReport | undefined
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      const report = db.painReports.find((item) => item.id === reportId && item.missionId === missionId)
+      if (!report) throw new NotFoundException('Pain report not found')
+      const grant = db.healthGrants.find((item) =>
+        item.missionId === missionId &&
+        item.subjectProfileId === report.profileId &&
+        item.granteeProfileId === profile.id &&
+        !item.revokedAt &&
+        item.categories.includes('symptoms') &&
+        (!item.expiresAt || item.expiresAt > Date.now()) &&
+        item.acceptedAt !== null)
+      if (!grant) throw new ForbiddenException('The person has not authorized access to this category')
+      const linked = appointmentId ? this.bindPainAppointment(db, missionId, report.profileId, appointmentId) : report.appointmentId
+      const now = Date.now()
+      report.clinicalNotes.push({
+        id: nid(),
+        authorProfileId: profile.id,
+        appointmentId: linked,
+        body: noteBody,
+        createdAt: now,
+      })
+      if (linked && !report.appointmentId) {
+        report.appointmentId = linked
+        report.revisions.push({ at: now, actorProfileId: profile.id, action: 'linked', note: linked, marks: report.marks })
+      }
+      report.updatedAt = now
+      if (JSON.stringify(report.marks) !== marksBefore) {
+        throw new BadRequestException('A clinical note does not change the self-report')
+      }
+      updated = report
+    })
+    return this.savedPain(updated)
+  }
+
+  private bindPainAppointment(db: { appointments: Appointment[] }, missionId: string, subjectId: string, appointmentId: string | null) {
+    if (!appointmentId) return null
+    const row = db.appointments.find((item) => item.id === appointmentId && item.missionId === missionId)
+    if (!row || row.requesterId !== subjectId) throw new BadRequestException('That visit does not belong to this person')
+    return row.id
   }
 
   addHealthIndicator(
@@ -876,7 +1054,10 @@ export class PlatformService implements OnModuleInit {
       bodyRegion: input.bodyRegion ?? defaults.bodyRegion,
       createdAt: Date.now(),
     }
-    this.store.mutate((db) => db.healthIndicators.push(row))
+    this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
+      db.healthIndicators.push(row)
+    })
     return row
   }
 
@@ -896,7 +1077,7 @@ export class PlatformService implements OnModuleInit {
     if (!membership) throw new ForbiddenException()
     const grantee = this.store.get().memberships.find((item) => item.missionId === missionId && item.profileId === granteeProfileId && item.status === 'active')
     if (!grantee || (grantee.role !== 'medic' && grantee.role !== 'psychologist')) {
-      throw new BadRequestException('El destinatario debe ser médico o psicólogo de la misión')
+      throw new BadRequestException('The recipient must be the mission Physician or Psychologist')
     }
     const grant: HealthGrant = {
       id: nid(),
@@ -907,9 +1088,11 @@ export class PlatformService implements OnModuleInit {
       scopeNote,
       expiresAt,
       revokedAt: null,
+      acceptedAt: Date.now(),
       createdAt: Date.now(),
     }
     this.store.mutate((db) => {
+      this.requireAction(this.missionIn(db, missionId), 'clinical_write')
       db.healthGrants.push(grant)
       db.accessAudit.push({ id: nid(), missionId, actorProfileId: subject.id, action: 'grant-health', detail: `${granteeProfileId}:${categories.join(',')}`, createdAt: Date.now() })
     })
@@ -919,7 +1102,11 @@ export class PlatformService implements OnModuleInit {
   revokeGrant(subject: Profile, grantId: string) {
     this.store.mutate((db) => {
       const grant = db.healthGrants.find((item) => item.id === grantId)
-      if (!grant || grant.subjectProfileId !== subject.id) throw new ForbiddenException('Solo quien otorgó puede revocar')
+      if (!grant || grant.subjectProfileId !== subject.id) throw new ForbiddenException('Only the person who granted access can revoke it')
+      const mission = db.missions.find((item) => item.id === grant.missionId)
+      if (!mission || !stageAllows(mission.stage, 'clinical_write')) {
+        throw new BadRequestException(stageDeniedMessage('clinical_write', mission?.stage || 'postmission'))
+      }
       grant.revokedAt = Date.now()
       db.accessAudit.push({ id: nid(), missionId: grant.missionId, actorProfileId: subject.id, action: 'revoke-grant', detail: grantId, createdAt: Date.now() })
     })
@@ -938,14 +1125,19 @@ export class PlatformService implements OnModuleInit {
     return {
       sharesWithChief: ['mediciones permitidas', 'alertas operativas', 'seguimiento de checklist'],
       neverAutoShared: ['conversaciones emocionales con Quirón', 'notas clínicas', 'expediente completo'],
-      note: 'El jefe ve estado operativo según política informada; no chats privados.',
+      note: 'The Mission Commander sees operational status under the stated policy, not private chats.',
     }
   }
 
   // --- Quirón conversations ---
-  startConversation(profile: Profile, missionId: string, mode: 'physical' | 'emotional', locale: 'es' | 'en' = 'es') {
+  startConversation(profile: Profile, missionId: string, mode: 'physical' | 'emotional', locale: 'es' | 'en' = 'en') {
     this.requireMembership(profile, missionId)
     if (!['physical', 'emotional'].includes(mode)) throw new BadRequestException('Invalid conversation mode')
+    const mission = this.missionIn(this.store.get(), missionId)
+    if (mode === 'emotional') this.requireAction(mission, 'quiron_flight')
+    else if (!stageAllows(mission.stage, 'quiron_prep') && !stageAllows(mission.stage, 'quiron_flight')) {
+      throw new BadRequestException(stageDeniedMessage('quiron_prep', mission.stage))
+    }
     const now = Date.now()
     const conversation: Conversation = {
       id: nid(),
@@ -984,6 +1176,11 @@ export class PlatformService implements OnModuleInit {
   appendConversationTurn(profile: Profile, conversationId: string, text: string,
     reply: Omit<Conversation['messages'][number], 'role' | 'at'>, expectedMessages: number) {
     const conversation = this.ownedConversation(profile, conversationId)
+    const mission = this.missionIn(this.store.get(), conversation.missionId)
+    if (conversation.mode === 'emotional') this.requireAction(mission, 'quiron_flight')
+    else if (!stageAllows(mission.stage, 'quiron_prep') && !stageAllows(mission.stage, 'quiron_flight')) {
+      throw new BadRequestException(stageDeniedMessage('quiron_prep', mission.stage))
+    }
     if (conversation.messages.length !== expectedMessages) throw new ConflictException('Conversation changed; retry')
     const now = Date.now()
     this.store.mutate((db) => {
@@ -1041,12 +1238,14 @@ export class PlatformService implements OnModuleInit {
   urgentHelp(profile: Profile, missionId: string) {
     this.requireMembership(profile, missionId)
     const db = this.store.get()
+    this.requireAction(this.missionIn(db, missionId), 'clinical_write')
     const protocol = db.protocols.find((item) => item.id === 'proto-urgent-v1')
     const professionals = db.memberships
       .filter((item) => item.missionId === missionId && item.status === 'active' && (item.role === 'medic' || item.role === 'psychologist' || item.role === 'chief'))
       .map((item) => db.profiles.find((profileRow) => profileRow.id === item.profileId))
       .filter(Boolean)
     this.store.mutate((store) => {
+      this.requireAction(this.missionIn(store, missionId), 'clinical_write')
       store.accessAudit.push({
         id: nid(),
         missionId,
@@ -1061,57 +1260,228 @@ export class PlatformService implements OnModuleInit {
       received: false,
       protocol,
       professionals,
-      limitation: 'Quirón no improvisa tratamientos. Seguí el protocolo versionado y el contacto humano.',
+      limitation: 'Quirón does not improvise treatments. Follow the versioned protocol and contact a person.',
     }
   }
 
-  requestAppointment(profile: Profile, missionId: string, input: { specialty: string; professionalId?: string | null; modality?: string; reason?: string; summary?: string; scheduledAt?: number | null }) {
+  requestAppointment(profile: Profile, missionId: string, input: {
+    specialty: string
+    professionalId?: string | null
+    modality?: string
+    reason?: string
+    summary?: string
+    scheduledAt?: number | null
+    durationMin?: number
+    timezone?: string
+    shareCategories?: string[]
+  }) {
     this.requireMembership(profile, missionId)
-    if (input.professionalId && input.scheduledAt) {
-      const clash = this.store.get().appointments.some((item) =>
+    const specialty = input.specialty === 'psychological' || input.specialty === 'psicologo' ? 'psychological' : input.specialty === 'medical' || input.specialty === 'medico' ? 'medical' : ''
+    if (specialty !== 'medical' && specialty !== 'psychological') throw new BadRequestException('Choose medical or psychological care')
+    if (!input.professionalId) throw new BadRequestException('Choose a professional on this mission')
+    const reason = input.reason?.trim() || ''
+    if (reason.length < 3) throw new BadRequestException('A reason is required')
+    if (input.scheduledAt == null || !Number.isFinite(input.scheduledAt)) throw new BadRequestException('Choose a time')
+    const durationMin = input.durationMin && input.durationMin >= 15 && input.durationMin <= 120 ? input.durationMin : 30
+    const appointment = this.store.mutate((db) => {
+      const mission = this.missionIn(db, missionId)
+      this.requireAction(mission, 'clinical_write')
+      const professional = db.memberships.find((item) => item.missionId === missionId && item.profileId === input.professionalId && item.status === 'active')
+      const expected = specialty === 'medical' ? 'medic' : 'psychologist'
+      if (!professional || professional.role !== expected) throw new BadRequestException('Ese profesional no cubre esta especialidad en la misión')
+      this.assertSlotOpen(db, missionId, input.professionalId!, input.scheduledAt!, durationMin)
+      const duplicate = db.appointments.some((item) =>
         item.missionId === missionId &&
+        item.requesterId === profile.id &&
         item.professionalId === input.professionalId &&
         item.scheduledAt === input.scheduledAt &&
-        item.status !== 'cancelled')
-      if (clash) throw new BadRequestException('Ese horario ya está ocupado')
-    }
-    const appointment: Appointment = {
-      id: nid(),
-      missionId,
-      requesterId: profile.id,
-      professionalId: input.professionalId ?? null,
-      specialty: input.specialty,
-      modality: input.modality || 'aboard',
-      reason: input.reason || '',
-      summary: input.summary || '',
-      status: input.professionalId ? 'pending_confirm' : 'requested',
-      scheduledAt: input.scheduledAt ?? null,
-      createdAt: Date.now(),
-    }
-    this.store.mutate((db) => db.appointments.push(appointment))
-    return { appointment, note: 'Solicitud registrada. No está confirmada hasta aceptación válida.' }
+        item.status !== 'cancelled' &&
+        item.status !== 'completed')
+      if (duplicate) throw new ConflictException('An identical request already exists for that time')
+      const now = Date.now()
+      const row: Appointment = {
+        id: nid(),
+        missionId,
+        requesterId: profile.id,
+        professionalId: input.professionalId!,
+        specialty,
+        modality: input.modality || 'aboard',
+        reason,
+        summary: (input.summary || '').trim(),
+        professionalNotes: '',
+        shareCategories: input.shareCategories || [],
+        status: 'requested',
+        scheduledAt: input.scheduledAt!,
+        durationMin,
+        timezone: input.timezone || mission.timezone || 'UTC',
+        outcome: '',
+        cancelReason: '',
+        followUpOf: null,
+        history: [{ at: now, actorId: profile.id, action: 'request', from: null, to: 'requested', note: 'Waiting for the professional' }],
+        simulated: false,
+        createdAt: now,
+        updatedAt: now,
+      }
+      db.appointments.push(row)
+      return row
+    })
+    return { appointment, note: 'Request recorded. Confirmation requires valid acceptance.' }
   }
 
   confirmAppointment(profile: Profile, appointmentId: string, accept: boolean) {
-    this.store.mutate((db) => {
-      const appointment = db.appointments.find((item) => item.id === appointmentId)
-      if (!appointment) throw new NotFoundException('Cita no encontrada')
-      if (appointment.professionalId !== profile.id && this.membership(profile.id, appointment.missionId)?.role !== 'chief') {
-        throw new ForbiddenException('Solo el profesional o el jefe pueden confirmar')
+    const saved = this.store.mutate((db) => {
+      const appointment = this.appointmentIn(db, appointmentId)
+      this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
+      if (appointment.professionalId !== profile.id) throw new ForbiddenException('Only the assigned professional can respond')
+      if (appointment.status !== 'requested' && appointment.status !== 'pending_confirm' && appointment.status !== 'rescheduled') {
+        throw new BadRequestException('Esta cita ya no está pendiente de respuesta')
       }
-      appointment.status = accept ? 'confirmed' : 'cancelled'
+      const from = appointment.status
+      const now = Date.now()
+      if (accept) {
+        this.assertSlotOpen(db, appointment.missionId, appointment.professionalId!, appointment.scheduledAt || 0, appointment.durationMin || 30, appointment.id)
+        appointment.status = 'confirmed'
+        appointment.history.push({ at: now, actorId: profile.id, action: 'confirm', from, to: 'confirmed', note: 'Professional accepted the slot' })
+      } else {
+        appointment.status = 'cancelled'
+        appointment.cancelReason = 'Professional declined'
+        appointment.history.push({ at: now, actorId: profile.id, action: 'cancel', from, to: 'cancelled', note: 'Professional declined' })
+      }
+      appointment.updatedAt = now
+      return appointment
     })
-    return this.store.get().appointments.find((item) => item.id === appointmentId)
+    return this.presentOne(profile, saved)
+  }
+
+  rescheduleAppointment(profile: Profile, appointmentId: string, scheduledAt: number) {
+    if (!Number.isFinite(scheduledAt)) throw new BadRequestException('Choose a time')
+    const saved = this.store.mutate((db) => {
+      const appointment = this.appointmentIn(db, appointmentId)
+      this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
+      if (appointment.professionalId !== profile.id) throw new ForbiddenException('Solo el profesional asignado puede reprogramar')
+      if (appointment.status === 'cancelled' || appointment.status === 'completed') throw new BadRequestException('Esta cita ya está cerrada')
+      this.assertSlotOpen(db, appointment.missionId, appointment.professionalId!, scheduledAt, appointment.durationMin || 30, appointment.id)
+      const from = appointment.status
+      const now = Date.now()
+      appointment.scheduledAt = scheduledAt
+      appointment.status = 'rescheduled'
+      appointment.history.push({ at: now, actorId: profile.id, action: 'reschedule', from, to: 'rescheduled', note: 'Professional moved the slot' })
+      appointment.updatedAt = now
+      return appointment
+    })
+    return this.presentOne(profile, saved)
+  }
+
+  cancelAppointment(profile: Profile, appointmentId: string, reason: string) {
+    if (!reason.trim()) throw new BadRequestException('Indicá el motivo de la cancelación')
+    const saved = this.store.mutate((db) => {
+      const appointment = this.appointmentIn(db, appointmentId)
+      this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
+      const allowed = appointment.professionalId === profile.id || appointment.requesterId === profile.id
+      if (!allowed) throw new ForbiddenException('Solo paciente o profesional pueden cancelar')
+      if (appointment.status === 'cancelled' || appointment.status === 'completed') throw new BadRequestException('Esta cita ya está cerrada')
+      const from = appointment.status
+      const now = Date.now()
+      appointment.status = 'cancelled'
+      appointment.cancelReason = reason.trim()
+      appointment.history.push({ at: now, actorId: profile.id, action: 'cancel', from, to: 'cancelled', note: reason.trim() })
+      appointment.updatedAt = now
+      return appointment
+    })
+    return this.presentOne(profile, saved)
+  }
+
+  completeAppointment(profile: Profile, appointmentId: string, outcome: string, professionalNotes = '') {
+    if (!outcome.trim()) throw new BadRequestException('Registrá el resultado de la consulta')
+    const saved = this.store.mutate((db) => {
+      const appointment = this.appointmentIn(db, appointmentId)
+      this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
+      if (appointment.professionalId !== profile.id) throw new ForbiddenException('Solo el profesional asignado puede cerrar la consulta')
+      if (appointment.status !== 'confirmed' && appointment.status !== 'rescheduled') {
+        throw new BadRequestException('La consulta debe estar confirmada antes de registrar el resultado')
+      }
+      const from = appointment.status
+      const now = Date.now()
+      appointment.status = 'completed'
+      appointment.outcome = outcome.trim()
+      appointment.professionalNotes = professionalNotes.trim()
+      appointment.history.push({ at: now, actorId: profile.id, action: 'complete', from, to: 'completed', note: 'Outcome recorded by the professional' })
+      appointment.updatedAt = now
+      return appointment
+    })
+    return this.presentOne(profile, saved)
   }
 
   listAppointments(profile: Profile, missionId: string) {
     this.requireMembership(profile, missionId)
-    const role = this.membership(profile.id, missionId)?.role
-    return this.store.get().appointments.filter((item) => {
-      if (item.missionId !== missionId) return false
-      if (role === 'chief' || role === 'medic' || role === 'psychologist') return true
-      return item.requesterId === profile.id
+    const role = this.membership(profile.id, missionId)?.role || 'crew'
+    return this.store.get().appointments
+      .filter((item) => item.missionId === missionId && canSeeAppointment(item, profile.id, role))
+      .map((item) => presentAppointment(item, profile.id, role))
+  }
+
+  listSlots(profile: Profile, missionId: string, professionalId: string, day: string) {
+    this.requireMembership(profile, missionId)
+    const db = this.store.get()
+    const mission = this.missionIn(db, missionId)
+    if (!stageAllows(mission.stage, 'clinical_write')) return { slots: [] as { start: number; label: string }[] }
+    const date = new Date(`${day}T00:00:00.000Z`)
+    if (Number.isNaN(date.getTime())) throw new BadRequestException('Fecha inválida')
+    const window = db.availability.find((item) => item.missionId === missionId && item.profileId === professionalId)
+      || { startMin: 8 * 60, endMin: 18 * 60, slotMin: 30, weekday: null as number | null }
+    if (window.weekday != null && window.weekday !== date.getUTCDay()) return { slots: [] }
+    const slots: { start: number; label: string }[] = []
+    for (let minute = window.startMin; minute + 30 <= window.endMin; minute += window.slotMin || 30) {
+      const start = Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate(), Math.floor(minute / 60), minute % 60)
+      const busy = db.appointments.some((item) => this.overlaps(item, professionalId, start, 30) && item.status !== 'cancelled')
+      if (!busy) slots.push({ start, label: `${String(Math.floor(minute / 60)).padStart(2, '0')}:${String(minute % 60).padStart(2, '0')} UTC` })
+    }
+    return { slots }
+  }
+
+  missionReview(profile: Profile, missionId: string) {
+    this.requireMembership(profile, missionId)
+    const db = this.store.get()
+    const role = this.membership(profile.id, missionId)?.role || 'crew'
+    const live = buildMissionReview(db, missionId, profile.id, role)
+    const versions = db.reviewReports
+      .filter((item) => item.missionId === missionId)
+      .map((item) => ({ id: item.id, version: item.version, createdAt: item.createdAt, generatedBy: item.generatedBy }))
+    return { review: live, versions }
+  }
+
+  saveReviewVersion(profile: Profile, missionId: string) {
+    this.requireRole(profile, missionId, ['chief'])
+    return this.store.mutate((db) => {
+      const mission = this.missionIn(db, missionId)
+      this.requireAction(mission, 'review_generate')
+      const version = db.reviewReports.filter((item) => item.missionId === missionId).length + 1
+      const body = buildMissionReview(db, missionId, profile.id, 'chief')
+      const report = {
+        id: nid(),
+        missionId,
+        version,
+        generatedBy: profile.id,
+        createdAt: Date.now(),
+        body,
+      }
+      db.reviewReports.push(report)
+      return { id: report.id, version, createdAt: report.createdAt }
     })
+  }
+
+  listInventory(profile: Profile, missionId: string) {
+    this.requireMembership(profile, missionId)
+    const db = this.store.get()
+    return {
+      items: db.inventoryItems.filter((item) => item.missionId === missionId),
+      movements: db.inventoryMovements.filter((item) => item.missionId === missionId),
+    }
+  }
+
+  listMissionAlerts(profile: Profile, missionId: string) {
+    this.requireMembership(profile, missionId)
+    return this.store.get().missionAlerts.filter((item) => item.missionId === missionId)
   }
 
   listEvidence() {
@@ -1128,19 +1498,62 @@ export class PlatformService implements OnModuleInit {
   }
 
   private requireMembership(profile: Profile, missionId: string) {
-    if (!this.membership(profile.id, missionId)) throw new ForbiddenException('No pertenecés a esta misión')
+    if (!this.membership(profile.id, missionId)) throw new ForbiddenException('You are not a member of this mission')
   }
 
   private requireRole(profile: Profile, missionId: string, roles: DemoRole[]) {
     const membership = this.membership(profile.id, missionId)
-    if (!membership || !roles.includes(membership.role)) throw new ForbiddenException('Rol insuficiente en esta misión')
+    if (!membership || !roles.includes(membership.role)) throw new ForbiddenException('Your role does not allow this action in this mission')
+  }
+
+  private appointmentIn(db: { appointments: Appointment[] }, appointmentId: string) {
+    const appointment = db.appointments.find((item) => item.id === appointmentId)
+    if (!appointment) throw new NotFoundException('Appointment not found')
+    return appointment
+  }
+
+  private presentOne(profile: Profile, appointment: Appointment) {
+    const role = this.membership(profile.id, appointment.missionId)?.role || 'crew'
+    return presentAppointment(appointment, profile.id, role)
+  }
+
+  private overlaps(item: Appointment, professionalId: string, start: number, durationMin: number, exceptId?: string) {
+    if (exceptId && item.id === exceptId) return false
+    if (item.professionalId !== professionalId || item.status === 'cancelled' || item.scheduledAt == null) return false
+    const end = start + durationMin * 60_000
+    const otherEnd = item.scheduledAt + (item.durationMin || 30) * 60_000
+    return start < otherEnd && item.scheduledAt < end
+  }
+
+  private assertSlotOpen(
+    db: { appointments: Appointment[]; availability: { missionId: string; profileId: string; weekday: number | null; startMin: number; endMin: number }[] },
+    missionId: string,
+    professionalId: string,
+    start: number,
+    durationMin: number,
+    exceptId?: string,
+  ) {
+    const window = db.availability.find((item) => item.missionId === missionId && item.profileId === professionalId)
+    if (window) {
+      const date = new Date(start)
+      const minute = date.getUTCHours() * 60 + date.getUTCMinutes()
+      if (window.weekday != null && window.weekday !== date.getUTCDay()) {
+        throw new BadRequestException('Outside the professional’s availability')
+      }
+      if (minute < window.startMin || minute + durationMin > window.endMin) {
+        throw new BadRequestException('Outside the professional’s availability')
+      }
+    }
+    const clash = db.appointments.some((item) =>
+      item.missionId === missionId && this.overlaps(item, professionalId, start, durationMin, exceptId))
+    if (clash) throw new BadRequestException('That time slot is already booked')
   }
 
   private requireHealthAccess(viewer: Profile, missionId: string, subjectId: string, category: string) {
     const membership = this.membership(viewer.id, missionId)
     if (!membership) throw new ForbiddenException()
     if (membership.role === 'chief' && (category === 'vitals' || category === 'alerts')) return
-    if (membership.role === 'chief') throw new ForbiddenException('El jefe no accede a este dato clínico/privado')
+    if (membership.role === 'chief') throw new ForbiddenException('The Mission Commander cannot access this clinical or private information')
     const now = Date.now()
     const grant = this.store.get().healthGrants.find((item) =>
       item.missionId === missionId &&
@@ -1148,8 +1561,9 @@ export class PlatformService implements OnModuleInit {
       item.granteeProfileId === viewer.id &&
       !item.revokedAt &&
       (!item.expiresAt || item.expiresAt > now) &&
-      item.categories.includes(category))
-    if (!grant) throw new ForbiddenException('Sin autorización de la persona para esta categoría')
+      item.categories.includes(category) &&
+      item.acceptedAt !== null)
+    if (!grant) throw new ForbiddenException('The person has not authorized access to this category')
     this.store.mutate((db) => {
       db.accessAudit.push({
         id: nid(),
@@ -1163,33 +1577,4 @@ export class PlatformService implements OnModuleInit {
   }
 
 
-}
-
-function starterPrep(
-  missionId: string,
-  at: number,
-  ownerId: string,
-  plannedCrewCount = 4,
-  durationDays = 30,
-): PrepItem[] {
-  return buildMissionPrepChecklist(plannedCrewCount, durationDays).map((item) => ({
-    id: `${missionId}-plan-${item.key}`,
-    missionId,
-    category: item.category,
-    title: item.title,
-    description: item.qtyLabel
-      ? `${item.description} Cantidad planificada: ${item.qtyLabel}.`
-      : item.description,
-    source: item.source,
-    ownerProfileId: ownerId,
-    qtyRequired: item.qtyRequired,
-    qtyAvailable: null,
-    critical: item.critical,
-    status: 'pendiente_revision' as const,
-    evidence: '',
-    verifiedBy: null,
-    verifiedAt: null,
-    applies: true,
-    updatedAt: at,
-  }))
 }

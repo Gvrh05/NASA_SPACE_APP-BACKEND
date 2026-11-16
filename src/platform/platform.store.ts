@@ -1,11 +1,12 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
-import { computePrepPercent, defaultPrep, emptyDb, seedPlatform } from './seed'
+import { ensureUpcomingCareAppointments, installDemoScenarios, DEMO_MISSIONS } from './demoScenarios'
+import { emptyDb, seedPlatform } from './seed'
 import { platformRemoteEnabled, pullPlatformSnapshot, pushPlatformSnapshot } from './platform.remote'
 import type { PlatformDb } from './types'
 
-/** v4: demo HELIOS vuelve a Preembarque con checklist abierto. */
-const VERSION = 4
+/** v5: four stage demos (draft, preflight, in flight, completed). */
+const VERSION = 5
 
 type FileShape = { version: number; revision?: number; db: PlatformDb }
 
@@ -176,39 +177,33 @@ export class PlatformStore {
     const merged = { ...emptyDb(), ...raw.db }
     if (!Array.isArray(merged.healthIndicators)) merged.healthIndicators = []
     if (!Array.isArray(merged.symptomReports)) merged.symptomReports = []
-    let persist = false
-    const needsDemoReset = (raw.version ?? 0) < VERSION
+    if (!Array.isArray(merged.painReports)) merged.painReports = []
+    if (!Array.isArray(merged.availability)) merged.availability = []
+    if (!Array.isArray(merged.inventoryItems)) merged.inventoryItems = []
+    if (!Array.isArray(merged.inventoryMovements)) merged.inventoryMovements = []
+    if (!Array.isArray(merged.missionAlerts)) merged.missionAlerts = []
+    if (!Array.isArray(merged.reviewReports)) merged.reviewReports = []
+    let persist = (raw.version ?? 0) !== VERSION
+    const needsDemo = (raw.version ?? 0) < VERSION
+      || !merged.missions.some((mission) => mission.id === DEMO_MISSIONS.horizon)
+    if (needsDemo) {
+      installDemoScenarios(merged)
+      persist = true
+    }
+    if (ensureUpcomingCareAppointments(merged)) persist = true
     for (const mission of merged.missions) {
-      if (!mission.environment) mission.environment = 'space_station'
-      if (mission.id === 'mission-helios-demo') {
-        const seats = merged.memberships.filter(
-          (membership) =>
-            membership.missionId === mission.id &&
-            membership.status === 'active' &&
-            membership.role !== 'ops',
-        ).length
-        mission.plannedCrewCount = seats > 0 ? seats : 4
-        if (
-          needsDemoReset ||
-          mission.stage === 'aboard' ||
-          mission.stage === 'postmission' ||
-          mission.stage === 'archived'
-        ) {
-          mission.stage = 'preflight'
-          mission.rosterLocked = false
-          mission.analysisStale = true
-          mission.durationDays = mission.durationDays || 42
-          const now = Date.now()
-          merged.prepItems = [
-            ...merged.prepItems.filter((item) => item.missionId !== mission.id),
-            ...defaultPrep(mission.id, now, mission.plannedCrewCount, mission.durationDays),
-          ]
-          mission.prepPercent = computePrepPercent(merged.prepItems.filter((item) => item.missionId === mission.id))
-          mission.updatedAt = now
-          persist = true
-        }
-        continue
+      if (!mission.environment) {
+        mission.environment = 'space_station'
+        persist = true
       }
+      if (mission.demoKey) continue
+      if (mission.wakeHourUtc == null) mission.wakeHourUtc = 6
+      if (mission.simulated == null) mission.simulated = false
+      if (mission.actualStart === undefined) mission.actualStart = null
+      if (mission.actualReturn === undefined) mission.actualReturn = null
+      if (mission.closedAt === undefined) mission.closedAt = null
+      if (mission.closedBy === undefined) mission.closedBy = null
+      if (mission.demoKey === undefined) mission.demoKey = null
       const deployed =
         mission.stage === 'aboard' ||
         mission.stage === 'postmission' ||
@@ -224,6 +219,18 @@ export class PlatformStore {
     }
     for (const symptom of merged.symptomReports) {
       if (symptom.bodyRegion === undefined) symptom.bodyRegion = null
+      if (!symptom.status) symptom.status = 'open'
+    }
+    for (const appointment of merged.appointments) {
+      if (!appointment.history) appointment.history = []
+      if (!appointment.shareCategories) appointment.shareCategories = []
+      if (appointment.durationMin == null) appointment.durationMin = 30
+      if (!appointment.timezone) appointment.timezone = 'UTC'
+      if (appointment.professionalNotes == null) appointment.professionalNotes = ''
+      if (appointment.outcome == null) appointment.outcome = ''
+      if (appointment.cancelReason == null) appointment.cancelReason = ''
+      if (appointment.updatedAt == null) appointment.updatedAt = appointment.createdAt
+      if (appointment.simulated == null) appointment.simulated = false
     }
     return { db: merged, persist }
   }

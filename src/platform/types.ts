@@ -43,9 +43,15 @@ export type Mission = {
   environment: MissionEnvironment
   stage: MissionStage
   plannedStart: string | null
+  /** ISO date-time when the simulated flight actually started. */
+  actualStart: string | null
+  /** ISO date-time of the recorded return. */
+  actualReturn: string | null
   durationDays: number
   plannedCrewCount: number
   timezone: string
+  /** UTC hour after which the daily check-in may be prompted. */
+  wakeHourUtc: number
   activities: string[]
   commsNotes: string
   storageNotes: string
@@ -54,6 +60,12 @@ export type Mission = {
   rosterLocked: boolean
   /** When true, plan/crew changed since last analysis — chief must run Analizar again before takeoff. */
   analysisStale: boolean
+  /** Stable demo scenario id. Null for missions a person created. */
+  demoKey: 'aurora' | 'horizon' | 'pathfinder' | 'genesis' | null
+  /** True when the row is simulated demonstration data, not a live clinical record. */
+  simulated: boolean
+  closedAt: number | null
+  closedBy: string | null
   createdBy: string
   createdAt: number
   updatedAt: number
@@ -115,6 +127,8 @@ export type HealthGrant = {
   scopeNote: string
   expiresAt: number | null
   revokedAt: number | null
+  /** Null means the professional has not accepted yet. Missing means a legacy active grant. */
+  acceptedAt?: number | null
   createdAt: number
 }
 
@@ -159,7 +173,75 @@ export type SymptomReport = {
   source: string
   /** Optional body region id for body-map linking (e.g. head, chest, abdomen). */
   bodyRegion: string | null
+  /** Historical clinical state. Closing a mission must not rewrite this. */
+  status: 'open' | 'monitoring' | 'resolved'
   createdAt: number
+}
+
+export type PainLaterality = 'left' | 'right' | 'midline'
+export type PainAspect = 'anterior' | 'posterior' | 'lateral' | 'unspecified'
+export type PainPattern = 'constant' | 'intermittent'
+export type PainFollowUp = 'open' | 'monitoring' | 'resolved'
+
+/**
+ * One surface mark on HELIOS mannequin model space.
+ * localPosition is meters in the model frame (+X person's left, +Y up, +Z anterior).
+ * It is an approximate self-report, not an organ or a validated landmark.
+ */
+export type PainMark = {
+  id: string
+  kind: 'point' | 'region'
+  regionId: string
+  detectedRegionId: string
+  regionLabel: string
+  labelSource: 'auto' | 'user'
+  laterality: PainLaterality
+  aspect: PainAspect
+  localPosition: { x: number; y: number; z: number }
+  normal: { x: number; y: number; z: number }
+  surfaceId: string
+  intensity: number
+  startedAt: number | null
+  pattern: PainPattern
+  description: string
+  activity: string
+  additionalSymptoms: string
+  notes: string
+}
+
+export type PainRevision = {
+  at: number
+  actorProfileId: string
+  action: 'created' | 'corrected' | 'status' | 'linked'
+  note: string
+  marks: PainMark[]
+}
+
+/** Professional observation. Never replaces the person's marks or description. */
+export type ClinicalPainNote = {
+  id: string
+  authorProfileId: string
+  appointmentId: string | null
+  body: string
+  createdAt: number
+}
+
+export type PainMapReport = {
+  id: string
+  missionId: string
+  profileId: string
+  symptomReportId: string | null
+  appointmentId: string | null
+  modelId: string
+  modelVersion: string
+  origin: 'self_report'
+  status: PainFollowUp
+  marks: PainMark[]
+  revisions: PainRevision[]
+  clinicalNotes: ClinicalPainNote[]
+  followsReportId: string | null
+  createdAt: number
+  updatedAt: number
 }
 
 export type IndicatorKind =
@@ -217,18 +299,141 @@ export type ConversationSummary = {
   createdAt: number
 }
 
+export type AppointmentStatus = 'requested' | 'pending_confirm' | 'confirmed' | 'rescheduled' | 'cancelled' | 'completed'
+export type AppointmentSpecialty = 'medical' | 'psychological'
+
+export type AppointmentChange = {
+  at: number
+  actorId: string
+  action: string
+  from: AppointmentStatus | null
+  to: AppointmentStatus
+  note: string
+}
+
 export type Appointment = {
   id: string
   missionId: string
   requesterId: string
   professionalId: string | null
-  specialty: string
+  specialty: AppointmentSpecialty | string
   modality: string
   reason: string
+  /** Voluntary summary the person agreed to share. Not a Quirón transcript. */
   summary: string
-  status: 'requested' | 'pending_confirm' | 'confirmed' | 'rescheduled' | 'cancelled' | 'completed'
+  /** Restricted to the assigned professional. */
+  professionalNotes: string
+  /** What the person authorized for this visit. */
+  shareCategories: string[]
+  status: AppointmentStatus
   scheduledAt: number | null
+  durationMin: number
+  timezone: string
+  outcome: string
+  cancelReason: string
+  followUpOf: string | null
+  history: AppointmentChange[]
+  simulated: boolean
   createdAt: number
+  updatedAt: number
+}
+
+export type AvailabilityWindow = {
+  id: string
+  missionId: string
+  profileId: string
+  /** Null = every weekday. */
+  weekday: number | null
+  startMin: number
+  endMin: number
+  slotMin: number
+}
+
+export type InventoryItem = {
+  id: string
+  missionId: string
+  name: string
+  kind: 'reusable' | 'consumable'
+  unit: string
+  qtyOnHand: number
+  qtyPlanned: number
+  simulated: boolean
+}
+
+export type InventoryMovement = {
+  id: string
+  missionId: string
+  itemId: string
+  delta: number
+  reason: string
+  actorProfileId: string
+  at: number
+  simulated: boolean
+}
+
+export type MissionAlert = {
+  id: string
+  missionId: string
+  subjectProfileId: string | null
+  title: string
+  detail: string
+  status: 'active' | 'monitoring' | 'closed'
+  simulated: boolean
+  openedAt: number
+  updatedAt: number
+}
+
+export type ReviewStatement = {
+  kind: 'observation' | 'proposal'
+  text: { en: string; es: string }
+  basis: { en: string; es: string }
+}
+
+export type MissionReview = {
+  simulated: true
+  stage: MissionStage
+  disclaimer: { en: string; es: string }
+  flight: {
+    name: string
+    destination: string
+    timezone: string
+    actualStart: string | null
+    actualReturn: string | null
+    closedAt: number | null
+    closedBy: string | null
+    durationDays: number
+    crewCount: number
+    prepPercent: number
+  }
+  indicators: { kind: string; count: number; staleCount: number }[]
+  rest: { profileId: string; sleepEpisodes: number; checkInsCompleted: number; checkInsPending: number }[]
+  episodes: { open: number; monitoring: number; resolved: number }
+  alerts: { id: string; title: string; status: MissionAlert['status']; subjectProfileId: string | null }[]
+  resources: {
+    name: string
+    kind: InventoryItem['kind']
+    qtyOnHand: number
+    qtyPlanned: number
+    movements: number
+    note: 'underused' | 'short' | 'used' | 'steady'
+  }[]
+  care: {
+    visibleDetail: boolean
+    byStatus: Partial<Record<AppointmentStatus, number>>
+    pendingAtClose: { id: string; status: string; specialty: string; label: string }[]
+    items: Record<string, unknown>[]
+  }
+  lessons: ReviewStatement[]
+  recommendations: ReviewStatement[]
+}
+
+export type ReviewReport = {
+  id: string
+  missionId: string
+  version: number
+  generatedBy: string
+  createdAt: number
+  body: MissionReview
 }
 
 export type EvidenceSource = {
@@ -263,10 +468,16 @@ export type PlatformDb = {
   wakeChecks: WakeCheck[]
   sleepEpisodes: SleepEpisode[]
   symptomReports: SymptomReport[]
+  painReports: PainMapReport[]
   healthIndicators: HealthIndicatorReading[]
   conversations: Conversation[]
   conversationSummaries: ConversationSummary[]
   appointments: Appointment[]
+  availability: AvailabilityWindow[]
+  inventoryItems: InventoryItem[]
+  inventoryMovements: InventoryMovement[]
+  missionAlerts: MissionAlert[]
+  reviewReports: ReviewReport[]
   evidenceSources: EvidenceSource[]
   protocols: Protocol[]
 }

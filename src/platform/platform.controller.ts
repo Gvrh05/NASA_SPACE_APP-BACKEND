@@ -40,7 +40,7 @@ export class PlatformController {
   @Post('missions')
   create(@Headers('x-helios-session') token?: string, @Body() body?: Record<string, unknown>) {
     return this.platform.createMission(this.profile(token), {
-      name: String(body?.name || 'Nueva misión'),
+      name: String(body?.name || 'New mission'),
       destination: body?.destination ? String(body.destination) : '',
       environment: body?.environment ? String(body.environment) as never : undefined,
       plannedStart: body?.plannedStart ? String(body.plannedStart) : null,
@@ -168,6 +168,31 @@ export class PlatformController {
     })
   }
 
+  @Get('missions/:id/pain-maps')
+  painMaps(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Query('subjectId') subjectId?: string) {
+    return { items: this.platform.listPainMaps(this.profile(token), id || '', subjectId) }
+  }
+
+  @Post('missions/:id/pain-maps')
+  painMapAdd(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Body() body?: unknown) {
+    return this.platform.createPainMap(this.profile(token), id || '', body ?? {})
+  }
+
+  @Post('missions/:id/pain-maps/:reportId/corrections')
+  painMapCorrect(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Param('reportId') reportId?: string, @Body() body?: unknown) {
+    return this.platform.correctPainMap(this.profile(token), id || '', reportId || '', body ?? {})
+  }
+
+  @Post('missions/:id/pain-maps/:reportId/status')
+  painMapStatus(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Param('reportId') reportId?: string, @Body() body?: { status?: string }) {
+    return this.platform.setPainStatus(this.profile(token), id || '', reportId || '', body?.status || '')
+  }
+
+  @Post('missions/:id/pain-maps/:reportId/clinical-notes')
+  painMapNote(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Param('reportId') reportId?: string, @Body() body?: { body?: string; appointmentId?: string | null }) {
+    return this.platform.addPainClinicalNote(this.profile(token), id || '', reportId || '', body?.body || '', body?.appointmentId)
+  }
+
   @Get('missions/:id/indicators')
   indicators(
     @Headers('x-helios-session') token?: string,
@@ -253,13 +278,26 @@ export class PlatformController {
   @Post('missions/:id/appointments')
   appointmentRequest(@Headers('x-helios-session') token?: string, @Param('id') id?: string, @Body() body?: Record<string, unknown>) {
     return this.platform.requestAppointment(this.profile(token), id || '', {
-      specialty: String(body?.specialty || 'general'),
+      specialty: String(body?.specialty || ''),
       professionalId: body?.professionalId ? String(body.professionalId) : null,
       modality: body?.modality ? String(body.modality) : 'aboard',
       reason: body?.reason ? String(body.reason) : '',
       summary: body?.summary ? String(body.summary) : '',
       scheduledAt: body?.scheduledAt == null ? null : Number(body.scheduledAt),
+      durationMin: body?.durationMin == null ? undefined : Number(body.durationMin),
+      timezone: body?.timezone ? String(body.timezone) : undefined,
+      shareCategories: Array.isArray(body?.shareCategories) ? body.shareCategories.map(String) : [],
     })
+  }
+
+  @Get('missions/:id/slots')
+  slots(
+    @Headers('x-helios-session') token?: string,
+    @Param('id') id?: string,
+    @Query('professionalId') professionalId?: string,
+    @Query('day') day?: string,
+  ) {
+    return this.platform.listSlots(this.profile(token), id || '', professionalId || '', day || '')
   }
 
   @Post('appointments/:appointmentId/confirm')
@@ -269,6 +307,53 @@ export class PlatformController {
     @Body() body?: { accept?: boolean },
   ) {
     return this.platform.confirmAppointment(this.profile(token), appointmentId || '', Boolean(body?.accept))
+  }
+
+  @Post('appointments/:appointmentId/reschedule')
+  appointmentReschedule(
+    @Headers('x-helios-session') token?: string,
+    @Param('appointmentId') appointmentId?: string,
+    @Body() body?: { scheduledAt?: number },
+  ) {
+    return this.platform.rescheduleAppointment(this.profile(token), appointmentId || '', Number(body?.scheduledAt))
+  }
+
+  @Post('appointments/:appointmentId/cancel')
+  appointmentCancel(
+    @Headers('x-helios-session') token?: string,
+    @Param('appointmentId') appointmentId?: string,
+    @Body() body?: { reason?: string },
+  ) {
+    return this.platform.cancelAppointment(this.profile(token), appointmentId || '', body?.reason || '')
+  }
+
+  @Post('appointments/:appointmentId/complete')
+  appointmentComplete(
+    @Headers('x-helios-session') token?: string,
+    @Param('appointmentId') appointmentId?: string,
+    @Body() body?: { outcome?: string; professionalNotes?: string },
+  ) {
+    return this.platform.completeAppointment(this.profile(token), appointmentId || '', body?.outcome || '', body?.professionalNotes || '')
+  }
+
+  @Get('missions/:id/review')
+  review(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.missionReview(this.profile(token), id || '')
+  }
+
+  @Post('missions/:id/review')
+  reviewSave(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.saveReviewVersion(this.profile(token), id || '')
+  }
+
+  @Get('missions/:id/inventory')
+  inventory(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.listInventory(this.profile(token), id || '')
+  }
+
+  @Get('missions/:id/alerts')
+  missionAlerts(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return { items: this.platform.listMissionAlerts(this.profile(token), id || '') }
   }
 
   @Get('evidence')

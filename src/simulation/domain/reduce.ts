@@ -359,7 +359,7 @@ function setMissionStage(state: AppState, stage: MissionStage): AppState {
     return withNotice(
       state,
       'err',
-      'Este rol simulado no cambia la etapa de la misión.',
+      'This simulated role cannot change the mission stage.',
     );
   }
   const from = MISSION_STAGE_ORDER.indexOf(state.mission.stage);
@@ -374,6 +374,13 @@ function setMissionStage(state: AppState, stage: MissionStage): AppState {
   const openEpisodes = state.episodes.filter(
     (item) => item.status !== 'closed',
   ).length;
+  if (stage === 'posmision' && openEpisodes > 0) {
+    return withNotice(
+      state,
+      'err',
+      'No se puede pasar a posmisión mientras haya episodios abiertos. La etapa actual se conserva.',
+    );
+  }
   const next = {
     ...state,
     mission: {
@@ -382,10 +389,7 @@ function setMissionStage(state: AppState, stage: MissionStage): AppState {
       stageChangedAt: state.clock.simulatedAt,
     },
   };
-  const text =
-    openEpisodes > 0
-      ? `Etapa: ${MISSION_STAGE_LABEL[stage]}. Hay ${openEpisodes} episodio(s) abiertos: el cambio de etapa no los cierra.`
-      : `Etapa: ${MISSION_STAGE_LABEL[stage]}. El historial se conserva.`;
+  const text = `Etapa: ${MISSION_STAGE_LABEL[stage]}. El historial se conserva.`;
   return addAudit(withNotice(next, 'ok', text), {
     actor: state.role,
     action: 'set-mission-stage',
@@ -403,21 +407,21 @@ function setPrepStatus(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no actualiza la lista de preparación.',
+      'This simulated role cannot update the preparation list.',
     );
   }
   if (state.mission.stage !== 'preembarque') {
     return withNotice(
       state,
       'err',
-      'Checklist cerrado: solo se edita en preembarque. No se puede reabrir después del despegue.',
+      'Checklist closed: editing is only allowed before boarding. It cannot be reopened after takeoff.',
     );
   }
   const current = state.prepItems.find((item) => item.id === prepId);
   if (!current)
-    return withNotice(state, 'err', 'No existe ese elemento de preparación.');
+    return withNotice(state, 'err', 'That preparation item does not exist.');
   if (current.status === status)
-    return withNotice(state, 'warn', 'Ese elemento ya tenía ese estado.');
+    return withNotice(state, 'warn', 'That item was already in that state.');
   const prepItems = state.prepItems.map((item) =>
     item.id === prepId
       ? { ...item, status, updatedAt: state.clock.simulatedAt }
@@ -434,7 +438,7 @@ function setPrepStatus(
 
 function setLink(state: AppState, link: LinkStatus): AppState {
   if (state.link === link)
-    return withNotice(state, 'warn', 'El enlace ya estaba en ese estado.');
+    return withNotice(state, 'warn', 'The link was already in that state.');
   const next = { ...state, link, linkDelayMin: link === 'delayed' ? 8 : 0 };
   const text =
     link === 'down'
@@ -456,11 +460,11 @@ function repeatMeasurement(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede registrar una medición.',
+      'This simulated role cannot record a measurement.',
     );
   }
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Esa medición ya estaba registrada.');
+    return withNotice(state, 'warn', 'That measurement was already recorded.');
   const minute = Math.floor(
     (state.clock.simulatedAt - state.clock.originAt) / MINUTE_MS,
   );
@@ -474,7 +478,7 @@ function repeatMeasurement(
     return withNotice(
       state,
       'err',
-      'Este escenario no entrega una lectura del sensor. No se inventó un valor.',
+      'This scenario does not provide a sensor reading. No value was invented.',
     );
   }
   const bumped = nextSeq(state);
@@ -520,9 +524,9 @@ function repeatMeasurement(
 
 function ackAlert(state: AppState, alertId: string): AppState {
   const alert = state.alerts.find((item) => item.id === alertId);
-  if (!alert) return withNotice(state, 'err', 'No se encontró el aviso.');
+  if (!alert) return withNotice(state, 'err', 'Notice not found.');
   if (alert.astronautAck)
-    return withNotice(state, 'warn', 'Ese aviso ya estaba confirmado.');
+    return withNotice(state, 'warn', 'That notice was already confirmed.');
   const alerts = state.alerts.map((item) =>
     item.id === alertId
       ? { ...item, astronautAck: true, updatedAt: state.clock.simulatedAt }
@@ -532,13 +536,13 @@ function ackAlert(state: AppState, alertId: string): AppState {
     withNotice(
       { ...state, alerts },
       'ok',
-      'Aviso confirmado. El episodio, si existe, sigue abierto.',
+      'Notice confirmed. The episode, if any, remains open.',
     ),
     {
       actor: state.role,
       action: 'ack-alert',
       entityId: alertId,
-      detail: 'La persona confirmó que vio el aviso.',
+      detail: 'The person confirmed seeing the notice.',
     },
   );
 }
@@ -549,9 +553,9 @@ function setAlertStatus(
   status: AlertStatus,
 ): AppState {
   const alert = state.alerts.find((item) => item.id === alertId);
-  if (!alert) return withNotice(state, 'err', 'No se encontró la alerta.');
+  if (!alert) return withNotice(state, 'err', 'Alert not found.');
   if (alert.status === status)
-    return withNotice(state, 'warn', 'La alerta ya estaba en ese estado.');
+    return withNotice(state, 'warn', 'The alert was already in that state.');
   if (
     (status === 'closed' || status === 'following') &&
     !isSensorAlert(alert.type) &&
@@ -560,7 +564,7 @@ function setAlertStatus(
     return withNotice(
       state,
       'err',
-      'Solo el rol simulado de equipo médico puede cambiar esta alerta de salud.',
+      'Only the simulated medical team role can change this health alert.',
     );
   }
   const alerts = state.alerts.map((item) =>
@@ -572,7 +576,7 @@ function setAlertStatus(
     withNotice(
       { ...state, alerts },
       'ok',
-      'Estado de la alerta actualizado. El episodio no se cerró solo.',
+      'Alert status updated. The episode was not automatically closed.',
     ),
     {
       actor: state.role,
@@ -585,22 +589,22 @@ function setAlertStatus(
 
 function resolveSensorAlert(state: AppState, alertId: string): AppState {
   const alert = state.alerts.find((item) => item.id === alertId);
-  if (!alert) return withNotice(state, 'err', 'No se encontró la alerta.');
+  if (!alert) return withNotice(state, 'err', 'Alert not found.');
   if (!isSensorAlert(alert.type)) {
     return withNotice(
       state,
       'err',
-      'Resolver un sensor no cierra un episodio de salud.',
+      'Resolving a sensor notice does not close a health episode.',
     );
   }
   if (!canUseInventory(state.role))
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede cerrar el aviso del sensor.',
+      'This simulated role cannot close the sensor notice.',
     );
   if (alert.status === 'closed')
-    return withNotice(state, 'warn', 'Ese aviso del sensor ya estaba cerrado.');
+    return withNotice(state, 'warn', 'That sensor notice was already closed.');
   const alerts = state.alerts.map((item) =>
     item.id === alertId
       ? {
@@ -614,13 +618,13 @@ function resolveSensorAlert(state: AppState, alertId: string): AppState {
     withNotice(
       { ...state, alerts },
       'ok',
-      'Aviso del sensor cerrado. Los síntomas y el episodio siguen como estaban.',
+      'Sensor notice closed. Symptoms and the episode remain unchanged.',
     ),
     {
       actor: state.role,
       action: 'resolve-sensor',
       entityId: alertId,
-      detail: 'Se cerró solo el aviso del sensor.',
+      detail: 'Only the sensor notice was closed.',
     },
   );
 }
@@ -638,15 +642,15 @@ function registerUse(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede registrar uso de inventario.',
+      'This simulated role cannot record inventory use.',
     );
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Ese uso ya estaba registrado.');
+    return withNotice(state, 'warn', 'That use was already recorded.');
   const resource = state.resources.find(
     (item) => item.id === action.resourceId,
   );
   if (!resource)
-    return withNotice(state, 'err', 'Ese recurso no está en el inventario.');
+    return withNotice(state, 'err', 'That resource is not in the inventory.');
   const plan = planResourceUse(resource, action.quantity);
   if (!plan.ok) return withNotice(state, 'err', plan.error);
   return applyStock(
@@ -674,15 +678,15 @@ function adjustResource(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede ajustar el inventario.',
+      'This simulated role cannot adjust inventory.',
     );
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Ese ajuste ya estaba registrado.');
+    return withNotice(state, 'warn', 'That adjustment was already recorded.');
   const resource = state.resources.find(
     (item) => item.id === action.resourceId,
   );
   if (!resource)
-    return withNotice(state, 'err', 'Ese recurso no está en el inventario.');
+    return withNotice(state, 'err', 'That resource is not in the inventory.');
   const plan = planAdjustment(resource, action.quantity);
   if (!plan.ok) return withNotice(state, 'err', plan.error);
   return applyStock(
@@ -757,25 +761,25 @@ function createResource(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede dar de alta un recurso.',
+      'This simulated role cannot add a resource.',
     );
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Ese alta ya estaba registrada.');
+    return withNotice(state, 'warn', 'That addition was already recorded.');
   const name = action.name.trim();
   const location = action.location.trim();
   if (name.length < 2 || name.length > 80)
     return withNotice(
       state,
       'err',
-      'El nombre debe tener entre 2 y 80 caracteres.',
+      'The name must contain between 2 and 80 characters.',
     );
   if (location.length < 2)
-    return withNotice(state, 'err', 'Indicá una ubicación.');
+    return withNotice(state, 'err', 'Enter a location.');
   if (!Number.isInteger(action.quantity) || action.quantity < 0)
     return withNotice(
       state,
       'err',
-      'La cantidad inicial no puede ser negativa.',
+      'The initial quantity cannot be negative.',
     );
   const bumped = nextSeq(state);
   const id = `res-${bumped.seq}`;
@@ -813,7 +817,7 @@ function createResource(
     action.idempotencyKey,
   );
   return addAudit(
-    withNotice(next, 'ok', 'Recurso agregado al inventario de la nave.'),
+    withNotice(next, 'ok', 'Resource added to the ship inventory.'),
     {
       actor: state.role,
       action: 'create-resource',
@@ -836,15 +840,15 @@ function updateResource(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede editar un recurso.',
+      'This simulated role cannot edit a resource.',
     );
   const current = state.resources.find((item) => item.id === action.resourceId);
   if (!current)
-    return withNotice(state, 'err', 'Ese recurso no está en el inventario.');
+    return withNotice(state, 'err', 'That resource is not in the inventory.');
   const name = action.name.trim();
   const location = action.location.trim();
   if (name.length < 2 || location.length < 2)
-    return withNotice(state, 'err', 'Nombre y ubicación son obligatorios.');
+    return withNotice(state, 'err', 'Name and location are required.');
   const resources = state.resources.map((item) =>
     item.id === current.id
       ? { ...item, name, location, status: action.status }
@@ -869,7 +873,7 @@ function updateResource(
     ],
   };
   return addAudit(
-    withNotice(next, 'ok', 'Ficha actualizada. La cantidad quedó igual.'),
+    withNotice(next, 'ok', 'Record updated. Quantity remains unchanged.'),
     {
       actor: state.role,
       action: 'edit-resource',
@@ -893,14 +897,14 @@ function createCommunication(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede preparar mensajes al equipo de Tierra.',
+      'This simulated role cannot prepare messages for the Earth team.',
     );
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Ese borrador ya estaba guardado.');
+    return withNotice(state, 'warn', 'That draft was already saved.');
   const subject = action.subject.trim();
   const body = action.body.trim();
   if (subject.length < 3)
-    return withNotice(state, 'err', 'El asunto es demasiado corto.');
+    return withNotice(state, 'err', 'The subject is too short.');
   if (subject.length > 180)
     return withNotice(
       state,
@@ -910,12 +914,12 @@ function createCommunication(
         : 'El asunto supera el límite de 180 caracteres.',
     );
   if (body.length < 3)
-    return withNotice(state, 'err', 'El mensaje está vacío.');
+    return withNotice(state, 'err', 'The message is empty.');
   if (body.length > 4000)
     return withNotice(
       state,
       'err',
-      'El mensaje supera el límite de 4000 caracteres.',
+      'The message exceeds the 4000-character limit.',
     );
   const bumped = nextSeq(state);
   const sequence =
@@ -1000,7 +1004,7 @@ function updateCommunicationDraft(
       'err',
       uiLang() === 'en'
         ? 'The subject is too short.'
-        : 'El asunto es demasiado corto.',
+        : 'The subject is too short.',
     );
   if (subject.length > 180)
     return withNotice(
@@ -1014,7 +1018,7 @@ function updateCommunicationDraft(
     return withNotice(
       state,
       'err',
-      uiLang() === 'en' ? 'The message is empty.' : 'El mensaje está vacío.',
+      uiLang() === 'en' ? 'The message is empty.' : 'The message is empty.',
     );
   if (body.length > 4000)
     return withNotice(
@@ -1022,7 +1026,7 @@ function updateCommunicationDraft(
       'err',
       uiLang() === 'en'
         ? 'The message is over the 4000 character limit.'
-        : 'El mensaje supera el límite de 4000 caracteres.',
+        : 'The message exceeds the 4000-character limit.',
     );
   if (current.subject === subject && current.body === body) {
     return withNotice(
@@ -1050,7 +1054,7 @@ function updateCommunicationDraft(
       actor: state.role,
       action: 'edit-communication-draft',
       entityId: current.id,
-      detail: 'Asunto y cuerpo del borrador actualizados.',
+      detail: 'Draft subject and body updated.',
     },
   );
 }
@@ -1064,19 +1068,19 @@ function transitionCommunication(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede cambiar el estado del mensaje.',
+      'This simulated role cannot change the message status.',
     );
   const current = state.communications.find((item) => item.id === id);
-  if (!current) return withNotice(state, 'err', 'No se encontró el mensaje.');
+  if (!current) return withNotice(state, 'err', 'Message not found.');
   if (current.status === status)
-    return withNotice(state, 'warn', 'Ese mensaje ya estaba en ese estado.');
+    return withNotice(state, 'warn', 'That message was already in that state.');
   if (COMM_NEXT[current.status] !== status)
-    return withNotice(state, 'err', 'Esa transición no está permitida.');
+    return withNotice(state, 'err', 'That transition is not allowed.');
   if ((status === 'sent' || status === 'received') && state.link === 'down') {
     return withNotice(
       state,
       'err',
-      'El enlace está cortado. El mensaje no se marcó como enviado ni recibido.',
+      'The link is offline. The message was not marked as sent or received.',
     );
   }
   return writeComm(state, current, status);
@@ -1087,13 +1091,13 @@ function mapComms(state: AppState, from: CommStatus, to: CommStatus): AppState {
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede entregar la cola.',
+      'This simulated role cannot deliver queued messages.',
     );
   if ((to === 'sent' || to === 'received') && state.link === 'down') {
     return withNotice(
       state,
       'err',
-      'Sin enlace no se entrega la cola. Los mensajes siguen pendientes.',
+      'Queued messages cannot be delivered while offline. They remain pending.',
     );
   }
   const batch = state.communications
@@ -1101,7 +1105,7 @@ function mapComms(state: AppState, from: CommStatus, to: CommStatus): AppState {
     .slice()
     .sort((a, b) => a.sequence - b.sequence);
   if (batch.length === 0)
-    return withNotice(state, 'warn', 'No hay mensajes en ese estado.');
+    return withNotice(state, 'warn', 'There are no messages in that state.');
   let next = state;
   for (const item of batch) next = writeComm(next, item, to);
   return {
@@ -1163,13 +1167,13 @@ function recordAnalysis(
     hasKey(state, idempotencyKey) ||
     state.analyses.some((item) => item.id === record.id)
   ) {
-    return withNotice(state, 'warn', 'Ese análisis ya estaba guardado.');
+    return withNotice(state, 'warn', 'That analysis was already saved.');
   }
   if (record.result.humanReviewRequired !== true)
     return withNotice(
       state,
       'err',
-      'Un análisis sin revisión humana no se guarda.',
+      'Analysis without human review cannot be saved.',
     );
   const resources = new Set(state.resources.map((item) => item.id));
   const unknown = record.result.resources.some(
@@ -1179,7 +1183,7 @@ function recordAnalysis(
     return withNotice(
       state,
       'err',
-      'El análisis cita un recurso que no existe. No se guardó.',
+      'The analysis cites a resource that does not exist. It was not saved.',
     );
   const next = rememberKey(
     { ...state, analyses: [...state.analyses, record] },
@@ -1190,14 +1194,14 @@ function recordAnalysis(
       next,
       'ok',
       record.source === 'model'
-        ? 'Análisis del modelo guardado.'
-        : 'Análisis del motor local guardado.',
+        ? 'AI analysis saved.'
+        : 'Local analysis saved.',
     ),
     {
       actor: state.role,
       action: 'record-analysis',
       entityId: record.id,
-      detail: 'El análisis no modificó inventario, alertas ni comunicaciones.',
+      detail: 'The analysis did not change inventory, alerts or communications.',
     },
   );
 }
@@ -1210,7 +1214,7 @@ function raiseSpaceAlert(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede crear esa alerta desde Mi espacio.',
+      'This simulated role cannot create that alert from My space.',
     );
   }
   if (hasKey(state, action.idempotencyKey) || action.categories.length === 0)
@@ -1247,7 +1251,7 @@ function raiseSpaceAlert(
   return withNotice(
     next,
     'warn',
-    'Esto es importante y no debe quedarse solo entre tú y yo.',
+    'This is important and should not stay just between us.',
   );
 }
 
@@ -1264,13 +1268,13 @@ function sendSpaceRequest(
     return withNotice(
       state,
       'err',
-      'Este rol simulado no puede enviar esa solicitud.',
+      'This simulated role cannot send that request.',
     );
   }
   const text = action.text.trim().slice(0, 2000);
-  if (!text) return withNotice(state, 'err', 'La solicitud no tiene texto.');
+  if (!text) return withNotice(state, 'err', 'The request has no text.');
   if (hasKey(state, action.idempotencyKey))
-    return withNotice(state, 'warn', 'Esa solicitud ya estaba enviada.');
+    return withNotice(state, 'warn', 'That request was already sent.');
   const profile = crewById(action.crewId);
   const line = spacePreview(
     profile.name.split(' ')[0] ?? profile.name,
@@ -1278,7 +1282,7 @@ function sendSpaceRequest(
     text,
   ).teamLine;
   if (!line)
-    return withNotice(state, 'err', 'Ese nivel no se comparte con el equipo.');
+    return withNotice(state, 'err', 'That sharing level is not shared with the team.');
   const request: SpaceRequest = {
     id: `space-shared-${action.crewId}-${state.spaceRequests.length}`,
     crewId: action.crewId,
@@ -1298,7 +1302,7 @@ function sendSpaceRequest(
     withNotice(
       next,
       'ok',
-      'La solicitud quedó en el panel del equipo, con el nivel que elegiste.',
+      'The request is in the team panel at your chosen sharing level.',
     ),
     {
       actor: next.role,

@@ -492,7 +492,7 @@ export const historyQuerySchema = z
   .strict()
   .refine(
     (q) => q.from === undefined || q.to === undefined || q.from <= q.to,
-    'Intervalo inválido',
+    'Invalid interval',
   );
 
 export function parse<T extends z.ZodType>(
