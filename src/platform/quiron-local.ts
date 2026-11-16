@@ -6,6 +6,16 @@ export function localCareReply(text: string, messages: { role: string; text: str
   if (answer) return answer;
   if (/^(hola|hello|hi)[!.\s]*$/.test(q)) return en ? 'Hi. What would you like to talk about?' : 'Hola. ¿De qué te gustaría hablar?';
   if (/^(stop|basta|no quiero seguir( hablando)?|i want to stop( talking)?)[.!?\s]*$/.test(q)) return en ? 'We can stop here.' : 'Lo dejamos aquí.';
+  if (/i['’]?d like to talk|me gustaria hablar|quiero hablar|talk about how/.test(q)) {
+    return en
+      ? 'I am Quirón, an AI assistant aboard HELIOS. I am here to listen, offer initial support, and help you express how you are feeling. What is on your mind?'
+      : 'Soy Quirón, un asistente de IA a bordo de HELIOS. Estoy aquí para escucharte, ofrecerte apoyo inicial y ayudarte a expresar cómo te sientes. ¿De qué te gustaría hablar?';
+  }
+  if (/help me request an appointment|ayudame a solicitar|solicitar (una )?cita|request (an )?appointment/.test(q)) {
+    return en
+      ? 'I can help you request an appointment with an available space psychologist for this mission. You can choose the professional, review their real availability, specify your reason, and confirm what information is shared.'
+      : 'Puedo ayudarte a solicitar una cita con un psicólogo espacial disponible para esta misión. Podrás elegir al profesional, consultar su disponibilidad real, indicar tu motivo y confirmar qué información se comparte.';
+  }
   if (/soledad|me siento sol|lonely|alone/.test(q)) return en ? 'Feeling lonely can be difficult. Would talking with someone you trust help right now?' : 'La soledad puede pesar. ¿Te ayudaría hablar un rato con alguien de confianza?';
   if (/doctor|medico|medica|psicolog|psychologist|no esta|isn.?t here|unavailable|le paso algo/.test(q)) {
     return en

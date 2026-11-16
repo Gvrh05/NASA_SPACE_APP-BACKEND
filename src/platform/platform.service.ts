@@ -26,6 +26,7 @@ import type {
   SleepEpisode,
   SymptomReport,
   WakeCheck,
+  UserMemory,
 } from './types'
 
 const SESSION_MS = 1000 * 60 * 60 * 12
@@ -1149,8 +1150,8 @@ export class PlatformService implements OnModuleInit {
         role: 'assistant',
         at: now,
         text: locale === 'en'
-          ? mode === 'physical' ? 'What would you like to talk about or understand about your physical wellbeing?' : 'This is your space to talk. Nothing is shared unless you explicitly approve it.'
-          : mode === 'physical' ? '\u00bfDe qu\u00e9 te gustar\u00eda hablar o qu\u00e9 quieres entender sobre tu bienestar f\u00edsico?' : 'Este es tu espacio para hablar. No se comparte nada sin tu aprobaci\u00f3n expl\u00edcita.',
+          ? mode === 'physical' ? 'What would you like to talk about or understand about your physical wellbeing?' : 'Would you like to talk about how you’re feeling, or get help requesting an appointment?'
+          : mode === 'physical' ? '\u00bfDe qu\u00e9 te gustar\u00eda hablar o qu\u00e9 quieres entender sobre tu bienestar f\u00edsico?' : '\u00bfTe gustar\u00eda hablar sobre c\u00f3mo te sientes o recibir ayuda para solicitar una cita?',
       }],
       createdAt: now,
       updatedAt: now,
@@ -1576,5 +1577,171 @@ export class PlatformService implements OnModuleInit {
     })
   }
 
+  // --- Memories ---
+  listMemories(profile: Profile): UserMemory[] {
+    return this.store.get().userMemories
+      .filter((item) => item.profileId === profile.id)
+      .sort((a, b) => b.createdAt - a.createdAt)
+  }
 
+  getMemory(profile: Profile, id: string): UserMemory {
+    const memory = this.store.get().userMemories.find((item) => item.id === id)
+    if (!memory) throw new NotFoundException('Memory not found')
+    if (memory.profileId !== profile.id) throw new ForbiddenException('Access denied to private memory')
+    return structuredClone(memory)
+  }
+
+  createMemory(profile: Profile, input: {
+    title: string
+    message: string
+    imageBase64?: string | null
+    imageContentType?: string | null
+  }): UserMemory {
+    const title = String(input.title || '').trim().slice(0, 100)
+    if (!title) throw new BadRequestException('Title is required')
+    const message = String(input.message || '').trim().slice(0, 500)
+
+    let imageFileId: string | null = null
+    let imageContentType: string | null = null
+
+    if (input.imageBase64 && typeof input.imageBase64 === 'string') {
+      let rawBase64 = input.imageBase64
+      let detectedType = input.imageContentType || 'image/jpeg'
+      if (rawBase64.startsWith('data:')) {
+        const match = rawBase64.match(/^data:([^;]+);base64,(.+)$/)
+        if (match) {
+          detectedType = match[1]
+          rawBase64 = match[2]
+        }
+      }
+      const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+      if (!allowed.includes(detectedType.toLowerCase())) {
+        throw new BadRequestException('Unsupported image type')
+      }
+      const buffer = Buffer.from(rawBase64, 'base64')
+      if (buffer.length > 5 * 1024 * 1024) {
+        throw new BadRequestException('Image exceeds 5MB limit')
+      }
+      const ext = detectedType.includes('png') ? 'png' : detectedType.includes('webp') ? 'webp' : detectedType.includes('gif') ? 'gif' : 'jpg'
+      const fileId = `${nid()}.${ext}`
+      this.store.saveMemoryFile(profile.id, fileId, buffer)
+      imageFileId = fileId
+      imageContentType = detectedType
+    }
+
+    const now = Date.now()
+    const memory: UserMemory = {
+      id: nid(),
+      profileId: profile.id,
+      title,
+      message,
+      imageFileId,
+      imageContentType,
+      createdAt: now,
+      updatedAt: now,
+    }
+
+    this.store.mutate((db) => {
+      if (!Array.isArray(db.userMemories)) db.userMemories = []
+      db.userMemories.push(memory)
+    })
+    return memory
+  }
+
+  updateMemory(profile: Profile, id: string, input: {
+    title?: string
+    message?: string
+    imageBase64?: string | null
+    imageContentType?: string | null
+    removeImage?: boolean
+  }): UserMemory {
+    const memory = this.store.get().userMemories.find((item) => item.id === id)
+    if (!memory) throw new NotFoundException('Memory not found')
+    if (memory.profileId !== profile.id) throw new ForbiddenException('Access denied to private memory')
+
+    let nextTitle = memory.title
+    if (input.title !== undefined) {
+      nextTitle = String(input.title).trim().slice(0, 100)
+      if (!nextTitle) throw new BadRequestException('Title cannot be empty')
+    }
+    let nextMessage = memory.message
+    if (input.message !== undefined) {
+      nextMessage = String(input.message).trim().slice(0, 500)
+    }
+
+    let nextImageFileId = memory.imageFileId
+    let nextImageContentType = memory.imageContentType
+
+    if (input.removeImage) {
+      if (memory.imageFileId) {
+        this.store.deleteMemoryFile(profile.id, memory.imageFileId)
+      }
+      nextImageFileId = null
+      nextImageContentType = null
+    } else if (input.imageBase64 && typeof input.imageBase64 === 'string') {
+      let rawBase64 = input.imageBase64
+      let detectedType = input.imageContentType || 'image/jpeg'
+      if (rawBase64.startsWith('data:')) {
+        const match = rawBase64.match(/^data:([^;]+);base64,(.+)$/)
+        if (match) {
+          detectedType = match[1]
+          rawBase64 = match[2]
+        }
+      }
+      const allowed = ['image/jpeg', 'image/png', 'image/webp', 'image/gif']
+      if (!allowed.includes(detectedType.toLowerCase())) {
+        throw new BadRequestException('Unsupported image type')
+      }
+      const buffer = Buffer.from(rawBase64, 'base64')
+      if (buffer.length > 5 * 1024 * 1024) {
+        throw new BadRequestException('Image exceeds 5MB limit')
+      }
+      if (memory.imageFileId) {
+        this.store.deleteMemoryFile(profile.id, memory.imageFileId)
+      }
+      const ext = detectedType.includes('png') ? 'png' : detectedType.includes('webp') ? 'webp' : detectedType.includes('gif') ? 'gif' : 'jpg'
+      const fileId = `${nid()}.${ext}`
+      this.store.saveMemoryFile(profile.id, fileId, buffer)
+      nextImageFileId = fileId
+      nextImageContentType = detectedType
+    }
+
+    const now = Date.now()
+    return this.store.mutate((db) => {
+      const target = db.userMemories.find((item) => item.id === id)
+      if (!target) throw new NotFoundException('Memory not found')
+      target.title = nextTitle
+      target.message = nextMessage
+      target.imageFileId = nextImageFileId
+      target.imageContentType = nextImageContentType
+      target.updatedAt = now
+      return structuredClone(target)
+    })
+  }
+
+  deleteMemory(profile: Profile, id: string): { ok: boolean } {
+    const memory = this.store.get().userMemories.find((item) => item.id === id)
+    if (!memory) throw new NotFoundException('Memory not found')
+    if (memory.profileId !== profile.id) throw new ForbiddenException('Access denied to private memory')
+
+    if (memory.imageFileId) {
+      this.store.deleteMemoryFile(profile.id, memory.imageFileId)
+    }
+
+    this.store.mutate((db) => {
+      db.userMemories = db.userMemories.filter((item) => item.id !== id)
+    })
+    return { ok: true }
+  }
+
+  getMemoryImage(profile: Profile, id: string): { buffer: Buffer; contentType: string } {
+    const memory = this.store.get().userMemories.find((item) => item.id === id)
+    if (!memory) throw new NotFoundException('Memory not found')
+    if (memory.profileId !== profile.id) throw new ForbiddenException('Access denied to private memory')
+    if (!memory.imageFileId) throw new NotFoundException('Memory has no image')
+
+    const buffer = this.store.getMemoryFile(profile.id, memory.imageFileId)
+    if (!buffer) throw new NotFoundException('Image file not found')
+    return { buffer, contentType: memory.imageContentType || 'image/jpeg' }
+  }
 }
