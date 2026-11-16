@@ -3,7 +3,13 @@ import { z } from 'zod';
 import { Test } from '@nestjs/testing';
 import type { INestApplication } from '@nestjs/common';
 import request from 'supertest';
-import { mkdtempSync, readFileSync, existsSync, rmSync } from 'node:fs';
+import {
+  mkdtempSync,
+  readFileSync,
+  existsSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { resolve } from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -195,6 +201,45 @@ describe('API de simulación integrada', () => {
     }
     return response;
   }
+  it('bloquea Completed y conserva In Flight si hay episodios abiertos', async () => {
+    await action({
+      type: 'addSymptom',
+      crewId: 'elena-torres',
+      symptoms: ['mareo'],
+      note: '',
+      idempotencyKey: 'stage-with-open-episode',
+    });
+    const stageBefore = state.mission.stage;
+    await action({ type: 'setMissionStage', stage: 'posmision' });
+    expect(state.mission.stage).toBe(stageBefore);
+    expect(state.episodes.some((episode) => episode.status !== 'closed')).toBe(
+      true,
+    );
+    expect(state.notice?.tone).toBe('err');
+  });
+  it('recupera misiones guardadas como Completed con episodios abiertos', () => {
+    const legacyId = randomUUID();
+    const legacyState = createInitialState('gradual-fatigue');
+    const invalidState = {
+      ...legacyState,
+      mission: { ...legacyState.mission, stage: 'posmision' as const },
+    };
+    writeFileSync(
+      resolve(directory, `${legacyId}.json`),
+      JSON.stringify({
+        version: 1,
+        state: invalidState,
+        revision: 0,
+        requests: {},
+      }),
+    );
+    const restored = new SimulationService().get(legacyId);
+    expect(restored.state.mission.stage).toBe('a_bordo');
+    expect(
+      restored.state.episodes.some((episode) => episode.status !== 'closed'),
+    ).toBe(true);
+    expect(restored.revision).toBe(1);
+  });
   it('recibe medición y genera alerta con evidencia sin IA', async () => {
     const p = packet();
     await ingest(p);

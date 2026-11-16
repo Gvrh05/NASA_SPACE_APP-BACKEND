@@ -88,6 +88,25 @@ describe('mission stage rules, agenda and close', () => {
     })).toThrow(/already booked/)
   })
 
+  it('seeds upcoming medical and psychological visits into each professional agenda', () => {
+    const sofia = person('sofia-chen')
+    const alex = person('alex-morgan')
+    const mateo = person('mateo-ruiz')
+    const missionId = DEMO_MISSIONS.horizon
+    const medicalId = `${missionId}-appt-med-upcoming`
+    const psychId = `${missionId}-appt-psych-upcoming`
+    const medical = service.listAppointments(sofia, missionId).find((item) => item.id === medicalId)
+    const psychological = service.listAppointments(alex, missionId).find((item) => item.id === psychId)
+    const patientVisits = service.listAppointments(mateo, missionId)
+
+    expect(medical).toMatchObject({ specialty: 'medical', status: 'confirmed', requesterId: mateo.id })
+    expect(psychological).toMatchObject({ specialty: 'psychological', status: 'confirmed', requesterId: mateo.id })
+    expect(medical?.scheduledAt).toBeGreaterThan(Date.now())
+    expect(psychological?.scheduledAt).toBeGreaterThan(Date.now())
+    expect(patientVisits.some((item) => item.id === medicalId)).toBe(true)
+    expect(patientVisits.some((item) => item.id === psychId)).toBe(true)
+  })
+
   it('hides psychological notes from the commander and the patient', () => {
     const chief = person('elena-torres')
     const patient = person('mateo-ruiz')

@@ -1,6 +1,6 @@
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
-import { installDemoScenarios, DEMO_MISSIONS } from './demoScenarios'
+import { ensureUpcomingCareAppointments, installDemoScenarios, DEMO_MISSIONS } from './demoScenarios'
 import { emptyDb, seedPlatform } from './seed'
 import { platformRemoteEnabled, pullPlatformSnapshot, pushPlatformSnapshot } from './platform.remote'
 import type { PlatformDb } from './types'
@@ -190,6 +190,7 @@ export class PlatformStore {
       installDemoScenarios(merged)
       persist = true
     }
+    if (ensureUpcomingCareAppointments(merged)) persist = true
     for (const mission of merged.missions) {
       if (!mission.environment) {
         mission.environment = 'space_station'

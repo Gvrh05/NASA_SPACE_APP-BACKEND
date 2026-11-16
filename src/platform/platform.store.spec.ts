@@ -26,6 +26,24 @@ describe('PlatformStore recovery and transactions', () => {
     expect(saved.db.missions[0].name).toBe(before)
   })
 
+  it('seeds an idempotent medical visit for the chief in the in-flight demo', () => {
+    const store = new PlatformStore(dir)
+    const visit = store.get().appointments.find((item) => item.id === 'mission-demo-horizon-appt-elena-upcoming')
+
+    expect(visit).toMatchObject({
+      missionId: 'mission-demo-horizon',
+      requesterId: 'elena-torres',
+      professionalId: 'sofia-chen',
+      specialty: 'medical',
+      status: 'confirmed',
+      simulated: true,
+    })
+    expect(visit?.scheduledAt).toBeGreaterThan(Date.now())
+
+    const reloaded = new PlatformStore(dir)
+    expect(reloaded.get().appointments.filter((item) => item.id === visit?.id)).toHaveLength(1)
+  })
+
   it('keeps an unreadable JSON file and still boots a demo database', () => {
     writeFileSync(join(dir, 'platform-db.json'), '{', 'utf8')
     const store = new PlatformStore(dir)

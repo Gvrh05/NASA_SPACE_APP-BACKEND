@@ -219,6 +219,82 @@ function appointment(input: Omit<Appointment, 'simulated' | 'history' | 'profess
   }
 }
 
+export function ensureUpcomingCareAppointments(db: PlatformDb, now = Date.now()) {
+  const missionId = DEMO_MISSIONS.horizon
+  if (!db.missions.some((mission) => mission.id === missionId)) return false
+
+  const upcoming = [
+    appointment({
+      id: `${missionId}-appt-psych-upcoming`,
+      missionId,
+      requesterId: 'mateo-ruiz',
+      professionalId: PSYCH,
+      specialty: 'psychological',
+      modality: 'aboard',
+      reason: 'Consulta psicológica de seguimiento',
+      summary: 'Solicitud de acompañamiento voluntario.',
+      status: 'confirmed',
+      scheduledAt: atHour(now + DAY, 9),
+      createdAt: now,
+      history: [{
+        at: now,
+        actorId: PSYCH,
+        action: 'confirm',
+        from: 'requested',
+        to: 'confirmed',
+        note: 'Professional accepted the slot',
+      }],
+    }),
+    appointment({
+      id: `${missionId}-appt-med-upcoming`,
+      missionId,
+      requesterId: 'mateo-ruiz',
+      professionalId: MEDIC,
+      specialty: 'medical',
+      modality: 'aboard',
+      reason: 'Revisión médica de rutina',
+      status: 'confirmed',
+      scheduledAt: atHour(now + 2 * DAY, 10),
+      createdAt: now,
+      history: [{
+        at: now,
+        actorId: MEDIC,
+        action: 'confirm',
+        from: 'requested',
+        to: 'confirmed',
+        note: 'Physician accepted the slot',
+      }],
+    }),
+    appointment({
+      id: `${missionId}-appt-elena-upcoming`,
+      missionId,
+      requesterId: CHIEF,
+      professionalId: MEDIC,
+      specialty: 'medical',
+      modality: 'aboard',
+      reason: 'Simulated routine medical follow-up',
+      status: 'confirmed',
+      scheduledAt: atHour(now + 2 * DAY, 11),
+      createdAt: now,
+      history: [{
+        at: now,
+        actorId: MEDIC,
+        action: 'confirm',
+        from: 'requested',
+        to: 'confirmed',
+        note: 'Physician accepted the slot',
+      }],
+    }),
+  ]
+  let changed = false
+  for (const visit of upcoming) {
+    if (db.appointments.some((item) => item.id === visit.id)) continue
+    db.appointments.push(visit)
+    changed = true
+  }
+  return changed
+}
+
 function addFlightRecords(db: PlatformDb, missionId: string, start: number, days: number, today: number) {
   const people = [...FLIGHT]
   for (let offset = 0; offset < days; offset += 1) {
@@ -720,6 +796,7 @@ export function installDemoScenarios(db: PlatformDb, now = Date.now()) {
   db.prepItems.push(...horizonPrep)
   applyStart(db, horizon.id, CHIEF, horizonStart)
   addFlightRecords(db, horizon.id, horizonStart, 9, now)
+  ensureUpcomingCareAppointments(db, now)
   todayCheck(db, horizon.id, now)
   db.conversations.push({
     id: `${horizon.id}-quiron-mateo`,

@@ -36,6 +36,30 @@ describe('platform and simulator mission context', () => {
     expect(second.revision).toBe(first.revision)
   })
 
+  it('keeps the simulator in flight when platform completion has open episodes', () => {
+    const platform = new PlatformService()
+    const simulation = new SimulationService()
+    const sessionId = randomUUID()
+    const initial = simulation.initialize(sessionId, { scenarioId: 'baseline' })
+    simulation.action(sessionId, randomUUID(), initial.revision, {
+      type: 'addSymptom',
+      crewId: 'elena-torres',
+      symptoms: ['mareo'],
+      note: '',
+      idempotencyKey: 'stage-with-open-episode',
+    })
+    const chief = platform.requireSession(platform.selectProfile('elena-torres').token)
+    const context = {
+      ...platform.simulatorContext(chief, 'mission-demo-pathfinder'),
+      stage: 'postmission' as const,
+    }
+
+    const snapshot = simulation.alignWithPlatform(sessionId, context)
+
+    expect(snapshot.state.mission.stage).toBe('a_bordo')
+    expect(snapshot.state.episodes.some((episode) => episode.status !== 'closed')).toBe(true)
+  })
+
   it('keeps symptom reads with the subject until a grant exists', () => {
     const platform = new PlatformService()
     const mateo = platform.requireSession(platform.selectProfile('mateo-ruiz').token)
