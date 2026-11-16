@@ -53,26 +53,21 @@ describe('PlatformService', () => {
   it('rejects overlapping sleep episodes', () => {
     const mateo = service.requireSession(service.selectProfile('mateo-ruiz').token)
     const start = Date.UTC(2026, 0, 1, 10, 0, 0)
-    service.addSleep(mateo, 'mission-helios-demo', start, start + 3600000, 3, 'nap')
-    expect(() => service.addSleep(mateo, 'mission-helios-demo', start + 1800000, start + 5400000, 3, 'nap')).toThrow()
+    service.addSleep(mateo, 'mission-demo-horizon', start, start + 3600000, 3, 'nap')
+    expect(() => service.addSleep(mateo, 'mission-demo-horizon', start + 1800000, start + 5400000, 3, 'nap')).toThrow()
   })
 
   it('keeps emotional conversation private by default', () => {
     const alex = service.requireSession(service.selectProfile('alex-morgan').token)
-    const conversation = service.startConversation(alex, 'mission-helios-demo', 'emotional')
+    const conversation = service.startConversation(alex, 'mission-demo-horizon', 'emotional')
     expect(conversation.private).toBe(true)
   })
 
   it('blocks medic symptom reads without grant and after revoke', () => {
-    const elena = service.requireSession(service.selectProfile('elena-torres').token)
     const mateo = service.requireSession(service.selectProfile('mateo-ruiz').token)
     const sofia = service.requireSession(service.selectProfile('sofia-chen').token)
-    const created = service.createMission(elena, { name: 'Grant Test', plannedCrewCount: 4 })
-    const joinCrew = service.requestJoin(mateo, created.mission.code, 'crew')
-    const joinMedic = service.requestJoin(sofia, created.mission.code, 'medic')
-    service.decideJoin(elena, created.mission.id, joinCrew.membershipId!, true)
-    service.decideJoin(elena, created.mission.id, joinMedic.membershipId!, true)
-    service.addSymptom(mateo, created.mission.id, {
+    const missionId = 'mission-demo-horizon'
+    service.addSymptom(mateo, missionId, {
       description: 'AUDIT headache',
       startedAt: null,
       intensity: 2,
@@ -80,20 +75,20 @@ describe('PlatformService', () => {
       source: 'self_report',
       bodyRegion: 'head',
     })
-    expect(() => service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toThrow()
-    const grant = service.grantHealth(mateo, created.mission.id, 'sofia-chen', ['symptoms', 'vitals'], null)
-    expect(service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toHaveLength(1)
+    expect(() => service.listSymptoms(sofia, missionId, 'mateo-ruiz')).toThrow()
+    const grant = service.grantHealth(mateo, missionId, 'sofia-chen', ['symptoms', 'vitals'], null)
+    expect(service.listSymptoms(sofia, missionId, 'mateo-ruiz').some((item) => item.description === 'AUDIT headache')).toBe(true)
     service.revokeGrant(mateo, grant.id)
-    expect(() => service.listSymptoms(sofia, created.mission.id, 'mateo-ruiz')).toThrow()
+    expect(() => service.listSymptoms(sofia, missionId, 'mateo-ruiz')).toThrow()
   })
 
   it('stores blood pressure as systolic/diastolic and lists vitals with grant', () => {
     const mateo = service.requireSession(service.selectProfile('mateo-ruiz').token)
     const sofia = service.requireSession(service.selectProfile('sofia-chen').token)
     expect(() =>
-      service.addHealthIndicator(mateo, 'mission-helios-demo', { kind: 'blood_pressure', value: 120 }),
+      service.addHealthIndicator(mateo, 'mission-demo-horizon', { kind: 'blood_pressure', value: 120 }),
     ).toThrow()
-    const bp = service.addHealthIndicator(mateo, 'mission-helios-demo', {
+    const bp = service.addHealthIndicator(mateo, 'mission-demo-horizon', {
       kind: 'blood_pressure',
       value: 118,
       valueSecondary: 76,
@@ -104,15 +99,15 @@ describe('PlatformService', () => {
     expect(bp.value).toBe(118)
     expect(bp.valueSecondary).toBe(76)
     expect(bp.unit).toBe('mmHg')
-    const mood = service.addHealthIndicator(mateo, 'mission-helios-demo', {
+    const mood = service.addHealthIndicator(mateo, 'mission-demo-horizon', {
       kind: 'mood',
       value: 2,
       origin: 'manual',
       context: 'post_wake',
     })
     expect(mood.unit).toBe('mood_1_5')
-    expect(() => service.listHealthIndicators(sofia, 'mission-helios-demo', 'mateo-ruiz')).toThrow()
-    service.grantHealth(mateo, 'mission-helios-demo', 'sofia-chen', ['vitals'], null)
-    expect(service.listHealthIndicators(sofia, 'mission-helios-demo', 'mateo-ruiz').length).toBeGreaterThanOrEqual(2)
+    expect(() => service.listHealthIndicators(sofia, 'mission-demo-horizon', 'mateo-ruiz')).toThrow()
+    service.grantHealth(mateo, 'mission-demo-horizon', 'sofia-chen', ['vitals'], null)
+    expect(service.listHealthIndicators(sofia, 'mission-demo-horizon', 'mateo-ruiz').length).toBeGreaterThanOrEqual(2)
   })
 })

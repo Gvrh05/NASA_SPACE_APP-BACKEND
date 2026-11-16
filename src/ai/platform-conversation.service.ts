@@ -4,6 +4,7 @@ import { SpaceConversationService, ConversationAccess } from './space-conversati
 import { SpaceToolsService } from './space-tools.service';
 import { PlatformService } from '../platform/platform.service';
 import type { Profile, Conversation } from '../platform/types';
+import { asksAboutPainReport, localPainReportReply, painSelfReportView } from '../platform/pain-map';
 import { localCareReply } from '../platform/quiron-local';
 import { careMessageSchema, careDraftRequestSchema, CareAiOptions } from './care.contract';
 import { toolArgumentsSchema, ToolName } from './space-conversation.contract';
@@ -28,7 +29,9 @@ Illness / discomfort protocol:
 5) Offer analysis only as explanation of recorded/simulated evidence — never as a clinical diagnosis.
 When explaining space-health ideas, use public NASA HRP context (five hazards, sleep, bone/muscle, fluid shift, behavioral health, delayed care). Cite hazards/risks/Evidence/Medical Operations/OCHMO/OSDR as background. Never invent a personal NASA dose or a treatment.
 
-A headache already specifies a physical symptom: ask a useful next question such as when it started. Do not repeat a previous question verbatim. Honor topic changes. General chat does not require data consent. For getLatestVitals, report only value and recorded time. For getVitalTrends, hrMin/hrMax are individual baseline limits, NEVER observed min/max. Missing evidence is not stability. No summary is shared automatically. Do not invent support resources or claim you sent a message.`;
+A headache already specifies a physical symptom: ask a useful next question such as when it started. Do not repeat a previous question verbatim. Honor topic changes. General chat does not require data consent. For getLatestVitals, report only value and recorded time. For getVitalTrends, hrMin/hrMax are individual baseline limits, NEVER observed min/max. Missing evidence is not stability. No summary is shared automatically. Do not invent support resources or claim you sent a message.
+
+Pain body-map fields in context are a self-report of an approximate surface mark: location label, side, intensity, onset, pattern, and description. Treat them as what the person reported. Do not infer an organ, a disease, or an urgency level from the mark position or the intensity number. You may help draft a summary or suggest requesting a visit. The person reviews and authorizes any share.`;
 
 @Injectable()
 export class PlatformConversationService {
@@ -70,6 +73,9 @@ export class PlatformConversationService {
       }
       signal.throwIfAborted();
       access.assert();
+      if (reply.source === 'local' && !safetyConcern && q.ai.dataConsent && asksAboutPainReport(q.text)) {
+        reply.text = localPainReportReply(this.platform.listPainMaps(profile, snapshot.missionId), q.locale);
+      }
       if (reply.source === 'local' && !safetyConcern) {
         const name = requiredEvidenceTool(q.text, access.allowed());
         if (name) {
@@ -151,8 +157,11 @@ Return JSON only: respuesta (up to 1200 characters containing the draft), nivel:
     return {
       assert, allowed,
       context: () => ({ careMode: snapshot.mode, simulated: true,
-        ...(options.dataConsent ? { reportedSymptoms: this.platform.listSymptoms(profile, snapshot.missionId).slice(-4)
-          .map(s => ({ id: s.id, description: s.description.slice(0, 800), startedAt: s.startedAt, intensity: s.intensity })) } : {}),
+        ...(options.dataConsent ? {
+          reportedSymptoms: this.platform.listSymptoms(profile, snapshot.missionId).slice(-4)
+            .map(s => ({ id: s.id, description: s.description.slice(0, 800), startedAt: s.startedAt, intensity: s.intensity })),
+          painSelfReports: painSelfReportView(this.platform.listPainMaps(profile, snapshot.missionId)),
+        } : {}),
       }),
       execute: (name, args, signal) => {
         signal.throwIfAborted(); assert();
@@ -169,8 +178,8 @@ Return JSON only: respuesta (up to 1200 characters containing the draft), nivel:
             durationDays: mission.durationDays,
             aboard: mission.stage === 'aboard',
             todayCheckIn: {
-              status: wake.check.status,
-              payload: wake.check.payload,
+              status: wake.check?.status || 'none',
+              payload: wake.check?.payload || {},
               note: wake.note,
             },
           };

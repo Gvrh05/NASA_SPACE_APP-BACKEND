@@ -96,6 +96,25 @@ const messages: Record<number, string> = {
   503: 'Service unavailable.',
   504: 'External service timed out.',
 };
+
+function clientMessage(status: number, payload: unknown): string {
+  const fallback = messages[status] ?? 'Request could not be completed.';
+  if (status >= 500) return fallback;
+  const raw =
+    typeof payload === 'string'
+      ? payload
+      : payload && typeof payload === 'object' && 'message' in payload
+        ? (payload as { message?: unknown }).message
+        : '';
+  const text = Array.isArray(raw)
+    ? raw.filter((item): item is string => typeof item === 'string').join(', ')
+    : typeof raw === 'string'
+      ? raw
+      : '';
+  if (!text || text.length > 400) return fallback;
+  if (/[\\]|node_modules|\bat\s+\S+\s+\(|\bError:/.test(text)) return fallback;
+  return text;
+}
 @Catch()
 @Injectable()
 export class SafeExceptionFilter implements ExceptionFilter {
@@ -133,7 +152,7 @@ export class SafeExceptionFilter implements ExceptionFilter {
       res.status(status).json({
         statusCode: status,
         code,
-        message: messages[status] ?? 'Request could not be completed.',
+        message: clientMessage(status, payload),
         requestId: req.securityRequestId,
       });
   }

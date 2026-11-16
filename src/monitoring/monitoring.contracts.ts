@@ -31,7 +31,7 @@ export const historyQuerySchema = z
     offset,
   })
   .strict()
-  .refine(rangeIsOrdered, 'Intervalo inválido');
+  .refine(rangeIsOrdered, 'Invalid interval');
 
 export const latestQuerySchema = z.object({ crewId, kind }).strict();
 
@@ -47,7 +47,7 @@ export const rejectionsQuerySchema = z
     offset,
   })
   .strict()
-  .refine(rangeIsOrdered, 'Intervalo inválido');
+  .refine(rangeIsOrdered, 'Invalid interval');
 
 export const ingestSchema = mutationSchema
   .extend({ simulated: z.literal(true), packet: packetSchema })

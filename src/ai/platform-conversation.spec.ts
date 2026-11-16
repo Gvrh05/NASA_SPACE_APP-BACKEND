@@ -15,7 +15,7 @@ import type { Profile } from '../platform/types';
 
 const final = (text = 'A useful response.') => ({ text: JSON.stringify({ respuesta: text, nivel: 'equipo', vistaPrevia: 'Not sent', humanReviewRequired: true }), calls: [] });
 const options = { modelConsent: true, historyConsent: true, dataConsent: false };
-const mission = 'mission-helios-demo';
+const mission = 'mission-demo-horizon';
 describe('specialized Gemini conversations, permissions and explicit sharing', () => {
   let directory: string;
   let platform: PlatformService;

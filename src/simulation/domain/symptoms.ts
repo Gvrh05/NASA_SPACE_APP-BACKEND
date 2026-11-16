@@ -100,7 +100,7 @@ export function registerSymptom(state: AppState, draft: SymptomDraft): AppState 
     action: 'register-symptom',
     entityId: symptom.id,
     detail: draft.enforceRole === false
-      ? 'Autorreporte incluido en el escenario. No se generó un diagnóstico.'
+      ? 'Self-report included in the scenario. No diagnosis was generated.'
       : 'Se guardó el autorreporte. No se generó un diagnóstico.',
   })
 }

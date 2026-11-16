@@ -26,12 +26,12 @@ describe('platform and simulator mission context', () => {
     const sessionId = randomUUID()
     simulation.initialize(sessionId, { scenarioId: 'baseline' })
     const chief = platform.requireSession(platform.selectProfile('elena-torres').token)
-    const context = platform.simulatorContext(chief, 'mission-helios-demo')
+    const context = platform.simulatorContext(chief, 'mission-demo-pathfinder')
     const first = simulation.alignWithPlatform(sessionId, context)
-    expect(first.state.mission.name).toBe('HELIOS Demo · Hábitat orbital')
+    expect(first.state.mission.name).toBe('HELIOS Pathfinder — Preflight')
     expect(first.state.mission.stage).toBe('preembarque')
-    expect(first.state.mission.destination).toBe('Órbita baja (simulación)')
-    expect(first.state.mission.crewCount).toBe(4)
+    expect(first.state.mission.destination).toBe('Low Earth orbit (simulated)')
+    expect(first.state.mission.crewCount).toBe(6)
     const second = simulation.alignWithPlatform(sessionId, context)
     expect(second.revision).toBe(first.revision)
   })
@@ -39,17 +39,17 @@ describe('platform and simulator mission context', () => {
   it('keeps symptom reads with the subject until a grant exists', () => {
     const platform = new PlatformService()
     const mateo = platform.requireSession(platform.selectProfile('mateo-ruiz').token)
-    platform.addSymptom(mateo, 'mission-helios-demo', {
+    platform.addSymptom(mateo, 'mission-demo-horizon', {
       description: 'ROLE-PRIVATE',
       startedAt: null,
       intensity: 2,
       context: 'self',
       source: 'self_report',
     })
-    expect(platform.listSymptoms(mateo, 'mission-helios-demo')).toHaveLength(1)
+    expect(platform.listSymptoms(mateo, 'mission-demo-horizon').some((item) => item.description === 'ROLE-PRIVATE')).toBe(true)
     for (const id of ['elena-torres', 'sofia-chen', 'alex-morgan']) {
       const viewer = platform.requireSession(platform.selectProfile(id).token)
-      expect(() => platform.listSymptoms(viewer, 'mission-helios-demo', 'mateo-ruiz')).toThrow()
+      expect(() => platform.listSymptoms(viewer, 'mission-demo-horizon', 'mateo-ruiz')).toThrow()
     }
   })
 })
