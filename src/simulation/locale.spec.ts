@@ -16,5 +16,5 @@ it('keeps simultaneous local analysis languages isolated without a model or Supa
   expect(values[0].result?.summary).toContain('Objective findings');
   expect(values[1].language).toBe('es');
   expect(values[1].result?.summary).toContain('Hallazgos objetivos');
-  expect(uiLang()).toBe('es');
+  expect(uiLang()).toBe('en');
 });

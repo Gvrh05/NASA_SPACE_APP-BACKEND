@@ -1,6 +1,8 @@
-﻿# Medidas de seguridad de HELIOS
+# Medidas de seguridad de HELIOS
 
-Implementadas y verificadas localmente el 14 de noviembre de 2026. Frontend en main; backend en master. No se hicieron commits, pushes ni un despliegue de estos cambios de seguridad. Las modificaciones NASA previas se conservaron.
+Implementadas y re-verificadas el **15 de noviembre de 2026**. Frontend Vite + backend Nest. El flujo de **selección de roles demo** (`/api/platform/auth/select` y Enter) **no se modificó**.
+
+Actualización 15/11: el presupuesto AI (20/min) también cubre rutas Quirón de platform (`/api/platform/.../quiron` y `/api/platform/quiron/...`), además de `/api/ai/*`.
 
 ## A. Claves y contraseñas
 
@@ -96,7 +98,7 @@ npm test -- --runInBand
 
 La prueba de recuperación adelanta el reloj controlado 60001 ms; no afirma haber esperado un minuto real. Las llamadas externas de seguridad usan un proveedor simulado, por lo que no consumen una cuenta IA. Para una demo manual, arrancar Nest con los límites anteriores, enviar 21 POST válidos ficticios desde el mismo cliente y comprobar 429; health debe seguir en 200. Tras 60 segundos la ventana se recupera.
 
-Resultados al cerrar la implementación: frontend 50/50; seguridad backend 19/19; módulos seguridad+IA+NASA 32/32; HTTP Jest 3/3. Compilación, typecheck y lint de archivos backend modificados correctos. Frontend lint sin errores, con la advertencia previa de useEffect en MySpacePage. Suite completa backend: 77 pasan y seis fallan por las diferencias previas entre copias del simulador (analysis, selectors, reduce, inventory, format y crew). No se cambiaron esas reglas ni se desactivaron pruebas. El lint global previo y los problemas previos de idioma/accesibilidad del monitor siguen documentados en VERIFICATION.md.
+Resultados al cerrar la implementación: frontend 50/50; seguridad backend 20/20 (`src/security`, incluye cuota Quirón platform); HTTP Jest 3/3. Compilación, typecheck y lint de archivos backend modificados correctos. Frontend lint sin errores, con la advertencia previa de useEffect en MySpacePage. Suite completa backend: 77 pasan y seis fallan por las diferencias previas entre copias del simulador (analysis, selectors, reduce, inventory, format y crew). No se cambiaron esas reglas ni se desactivaron pruebas. El lint global previo y los problemas previos de idioma/accesibilidad del monitor siguen documentados en VERIFICATION.md.
 
 ## Archivos de esta medida
 

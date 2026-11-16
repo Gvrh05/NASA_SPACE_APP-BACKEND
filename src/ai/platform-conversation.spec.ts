@@ -62,7 +62,7 @@ describe('specialized Gemini conversations, permissions and explicit sharing', (
   });
   it('does not contact the model without opt-in, but retains local continuity', async () => {
     const s = service(); const c = platform.startConversation(owner, mission, 'physical');
-    for (const text of ['me siento mal', 'fisico', 'dolor de cabeza', 'fisica']) await s.message(owner, c.id, { text }, signal());
+    for (const text of ['me siento mal', 'fisico', 'dolor de cabeza', 'fisica']) await s.message(owner, c.id, { text, locale: 'es' }, signal());
     expect(seen).toHaveLength(0);
     const messages = platform.ownedConversation(owner, c.id).messages;
     expect(messages.at(-1)?.text).toContain('dolor de cabeza');
@@ -77,6 +77,19 @@ describe('specialized Gemini conversations, permissions and explicit sharing', (
     expect(JSON.stringify(seen)).not.toContain('OTHER-MODULE-PRIVATE');
     await expect(s.message(profile('elena-torres'), c.id, { text: 'Read private', ai: options }, signal())).rejects.toThrow();
     expect(seen).toHaveLength(8);
+  });
+  it('adds same-mode longitudinal reports only when history consent is on', async () => {
+    const prior = platform.startConversation(owner, mission, 'physical');
+    platform.postConversationMessage(owner, prior.id, 'LONGITUDINAL-HEADACHE');
+    platform.postConversationMessage(owner, platform.startConversation(owner, mission, 'emotional').id, 'OTHER-MODULE-PRIVATE');
+    const current = platform.startConversation(owner, mission, 'physical');
+    await service().message(owner, current.id, { text: 'Hello again', ai: options }, signal());
+    expect(JSON.stringify(seen[0].history)).toContain('LONGITUDINAL-HEADACHE');
+    expect(JSON.stringify(seen[0].history)).not.toContain('OTHER-MODULE-PRIVATE');
+    seen.length = 0;
+    await service().message(owner, current.id, { text: 'Hello private', ai: { ...options, historyConsent: false } }, signal());
+    expect(seen[0].history).toEqual([]);
+    expect(JSON.stringify(seen[0])).not.toContain('LONGITUDINAL-HEADACHE');
   });
   it('withholds history and stored symptoms unless separately authorized', async () => {
     platform.addSymptom(owner, mission, { description: 'PRIVATE-SYMPTOM', startedAt: null, intensity: 1, context: 'self', source: 'self_report' });

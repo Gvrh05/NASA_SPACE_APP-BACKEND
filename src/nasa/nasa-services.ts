@@ -21,8 +21,9 @@ export class DonkiService {
       (process.env.NODE_ENV !== 'production' ? 'DEMO_KEY' : '');
     if (!key || (key === 'DEMO_KEY' && process.env.NODE_ENV === 'production'))
       throw new ServiceUnavailableException('NASA_API_KEY required');
-    const groups = await Promise.all(
-      (q.type ? [q.type] : ['SEP', 'FLR', 'CME']).map(async (type) => {
+    const types = q.type ? [q.type] : (['SEP', 'FLR', 'CME'] as const);
+    const settled = await Promise.allSettled(
+      types.map(async (type) => {
         // CCMC official service after the September 2026 migration. NASA key stays server-side.
         const url = new URL(`https://ccmc.gsfc.nasa.gov/DONKI/WS/get/${type}`);
         url.search = new URLSearchParams({
@@ -35,33 +36,96 @@ export class DonkiService {
           throw new ServiceUnavailableException('Invalid DONKI response');
         const sourceUrl = `https://ccmc.gsfc.nasa.gov/DONKI/WS/get/${type}?startDate=${q.startDate}&endDate=${q.endDate}`;
         return {
+          type,
           ...provenance('NASA DONKI', sourceUrl, response, true),
           events: response.payload
             .map(record)
-            .map((row) => ({
-              id: text(row.flrID ?? row.sepID ?? row.activityID),
-              type,
-              timestamp: text(row.beginTime ?? row.eventTime ?? row.startTime),
-              classification: text(row.classType),
-              description: text(row.note),
-              sourceUrl: nasaLink(row.link),
-            }))
+            .map((row) => {
+              const instruments = Array.isArray(row.instruments)
+                ? row.instruments
+                    .map((item) =>
+                      text(record(item).displayName ?? record(item).name),
+                    )
+                    .filter((item): item is string => Boolean(item))
+                : [];
+              const linked = Array.isArray(row.linkedEvents)
+                ? row.linkedEvents
+                    .map((item) => text(record(item).activityID))
+                    .filter((item): item is string => Boolean(item))
+                : [];
+              const activeRegion =
+                text(row.activeRegionNum) ??
+                (typeof row.activeRegionNum === 'number'
+                  ? String(row.activeRegionNum)
+                  : null);
+              return {
+                id: text(row.flrID ?? row.sepID ?? row.activityID),
+                type,
+                timestamp: text(
+                  row.beginTime ?? row.eventTime ?? row.startTime,
+                ),
+                beginTime: text(
+                  row.beginTime ?? row.eventTime ?? row.startTime,
+                ),
+                peakTime: text(row.peakTime),
+                endTime: text(row.endTime),
+                classification: text(row.classType),
+                description: text(row.note),
+                sourceUrl: nasaLink(row.link),
+                instruments,
+                sourceLocation: text(row.sourceLocation),
+                activeRegion,
+                linkedEvents: linked,
+                catalog: text(row.catalog),
+              };
+            })
             .filter((row) => row.id && row.timestamp),
         };
       }),
     );
+    const groups = settled.flatMap((item) =>
+      item.status === 'fulfilled' ? [item.value] : [],
+    );
+    const failures = types
+      .map((type, index) => {
+        const item = settled[index];
+        if (!item || item.status === 'fulfilled') return null;
+        return {
+          type,
+          message:
+            item.reason instanceof Error
+              ? item.reason.message
+              : 'Source unavailable',
+        };
+      })
+      .filter((row): row is { type: string; message: string } => Boolean(row));
+    if (!groups.length) {
+      throw new ServiceUnavailableException(
+        failures[0]?.message || 'DONKI unavailable',
+      );
+    }
+    const seen = new Set<string>();
+    const events = groups
+      .flatMap((g) => g.events)
+      .filter((event) => {
+        const keyId = `${event.type}:${event.id}`;
+        if (seen.has(keyId)) return false;
+        seen.add(keyId);
+        return true;
+      })
+      .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp)));
     return {
-      events: groups
-        .flatMap((g) => g.events)
-        .sort((a, b) => String(b.timestamp).localeCompare(String(a.timestamp))),
+      events,
       sources: groups.map((group) => ({
-        source: group.source,
+        source: `${group.source} · ${group.type}`,
         sourceUrl: group.sourceUrl,
         fetchedAt: group.fetchedAt,
         cached: group.cached,
         historical: group.historical,
         simulated: group.simulated,
+        type: group.type,
       })),
+      failures,
       query: q,
     };
   }

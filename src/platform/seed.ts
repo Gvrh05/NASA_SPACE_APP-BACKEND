@@ -1,4 +1,5 @@
 import { randomBytes } from 'node:crypto'
+import { buildMissionPrepChecklist } from './prepPlan'
 import type { PlatformDb, PrepItem } from './types'
 
 export function emptyDb(): PlatformDb {
@@ -15,6 +16,7 @@ export function emptyDb(): PlatformDb {
     wakeChecks: [],
     sleepEpisodes: [],
     symptomReports: [],
+    healthIndicators: [],
     conversations: [],
     conversationSummaries: [],
     appointments: [],
@@ -23,11 +25,25 @@ export function emptyDb(): PlatformDb {
   }
 }
 
+/** Avance 0–1 de un ítem: con cantidad usa tengo/requerido; sin cantidad, check binario. */
+export function prepItemProgress(item: PrepItem): number {
+  if (!item.applies || item.status === 'no_aplica') return 0
+  if (item.qtyRequired != null && item.qtyRequired > 0) {
+    const have = Math.max(0, Number(item.qtyAvailable ?? 0))
+    return Math.min(1, have / item.qtyRequired)
+  }
+  return item.status === 'cargado_verificado' ? 1 : 0
+}
+
 export function computePrepPercent(items: PrepItem[]): number {
   const applicable = items.filter((item) => item.applies && item.status !== 'no_aplica')
   if (applicable.length === 0) return 0
-  const done = applicable.filter((item) => item.status === 'cargado_verificado').length
-  return Math.round((done / applicable.length) * 1000) / 10
+  const sum = applicable.reduce((acc, item) => acc + prepItemProgress(item), 0)
+  return Math.round((sum / applicable.length) * 1000) / 10
+}
+
+export function isPrepItemComplete(item: PrepItem): boolean {
+  return prepItemProgress(item) >= 1
 }
 
 export function seedPlatform(): PlatformDb {
@@ -43,7 +59,7 @@ export function seedPlatform(): PlatformDb {
     { id: 'ops-desk', displayName: 'Mesa Ops', title: 'Operaciones / preparación (demo)', demoRole: 'ops', avatarKey: 'ops' },
   ]
 
-  db.prepItems = defaultPrep(missionId, now)
+  db.prepItems = defaultPrep(missionId, now, 4, 42)
   const percent = computePrepPercent(db.prepItems)
 
   db.missions = [
@@ -52,16 +68,19 @@ export function seedPlatform(): PlatformDb {
       code: 'HELIOS-DEMO',
       name: 'HELIOS Demo · Hábitat orbital',
       destination: 'Órbita baja (simulación)',
-      stage: 'aboard',
+      environment: 'space_station',
+      stage: 'preflight',
       plannedStart: '2026-02-01',
       durationDays: 42,
-      plannedCrewCount: 5,
+      /** 4 personas del monitor (Elena, Mateo, Sofía, Alex). Ops no cuenta como asiento. */
+      plannedCrewCount: 4,
       timezone: 'UTC',
       activities: ['Operaciones de hábitat', 'Ejercicio diario', 'EVA de demostración', 'Ciencia a bordo'],
       commsNotes: 'Enlace Tierra con demora simulada.',
       storageNotes: 'Inventario limitado; reposición solo en posmisión.',
       prepPercent: percent,
       rosterLocked: false,
+      analysisStale: true,
       createdBy: 'elena-torres',
       createdAt: now,
       updatedAt: now,
@@ -113,6 +132,22 @@ export function seedPlatform(): PlatformDb {
       kind: 'data',
       notes: 'No todo estudio es humano ni clínico.',
     },
+    {
+      id: 'csa-radiation',
+      title: 'How radiation affects the human body in space',
+      institution: 'Canadian Space Agency (CSA/ASC)',
+      url: 'https://www.asc-csa.gc.ca/eng/astronauts/space-medicine/radiation.asp',
+      kind: 'partner',
+      notes: 'Educación sobre radiación espacial y ALARA. No es dosis personal del tripulante HELIOS. Consultada 2026-11-15.',
+    },
+    {
+      id: 'csa-sciences',
+      title: 'Space science research (CSA)',
+      institution: 'Canadian Space Agency (CSA/ASC)',
+      url: 'https://www.asc-csa.gc.ca/eng/sciences/',
+      kind: 'partner',
+      notes: 'Portal partner del reto. Solo citas/enlaces; sin copiar datasets propietarios.',
+    },
   ]
 
   db.protocols = [
@@ -125,98 +160,47 @@ export function seedPlatform(): PlatformDb {
       audience: 'crew',
       createdAt: now,
     },
+    {
+      id: 'HELIOS-DEMO-REVIEW-v1',
+      missionId: null,
+      title: 'Protocolo de revisión de demostración HELIOS',
+      version: '1.0.0',
+      body: 'Reglas demo (NO clínicas / NO aprobadas por NASA):\n- FC Δ≥20 bpm → cambio observado\n- Temp Δ≥1°C → cambio observado\n- Ánimo ≤2/5 → revisión profesional pendiente (autorreporte)\n- Calidad pobre / dato antiguo → requiere comprobación\n- PA exige sistólica y diastólica\n“Sin alertas” ≠ salud perfecta.',
+      audience: 'crew',
+      createdAt: now,
+    },
   ]
 
   return db
 }
 
-function defaultPrep(missionId: string, at: number): PrepItem[] {
-  const base = (item: Omit<PrepItem, 'missionId' | 'updatedAt' | 'verifiedBy' | 'verifiedAt' | 'ownerProfileId' | 'evidence'> & { evidence?: string }): PrepItem => ({
-    ...item,
+/** Checklist de preembarque pendiente (no pre-marcado). */
+export function defaultPrep(
+  missionId: string,
+  at: number,
+  plannedCrewCount = 4,
+  durationDays = 42,
+): PrepItem[] {
+  return buildMissionPrepChecklist(plannedCrewCount, durationDays).map((item) => ({
+    id: `${missionId}-plan-${item.key}`,
     missionId,
-    updatedAt: at,
+    category: item.category,
+    title: item.title,
+    description: item.qtyLabel
+      ? `${item.description} Cantidad planificada: ${item.qtyLabel}.`
+      : item.description,
+    source: item.source,
     ownerProfileId: 'ops-desk',
-    evidence: item.evidence ?? '',
-    verifiedBy: item.status === 'cargado_verificado' ? 'elena-torres' : null,
-    verifiedAt: item.status === 'cargado_verificado' ? at : null,
-  })
-
-  return [
-    base({
-      id: `${missionId}-hygiene`,
-      category: 'higiene',
-      title: 'Material de higiene',
-      description: 'Consumibles de higiene para la duración planificada.',
-      source: 'Regla logística HELIOS (demo)',
-      critical: true,
-      status: 'cargado_verificado',
-      applies: true,
-      qtyRequired: 42,
-      qtyAvailable: 42,
-      evidence: 'Verificado en gabinete A',
-    }),
-    base({
-      id: `${missionId}-eval`,
-      category: 'monitoreo',
-      title: 'Kit de evaluación',
-      description: 'Equipos reutilizables de evaluación a bordo.',
-      source: 'HRP Evidence (contexto)',
-      critical: true,
-      status: 'cargado_verificado',
-      applies: true,
-      qtyRequired: 1,
-      qtyAvailable: 1,
-      evidence: 'Checklist firmado',
-    }),
-    base({
-      id: `${missionId}-oximeter`,
-      category: 'monitoreo',
-      title: 'Oxímetro',
-      description: 'Cobertura y redundancia; no por persona×día.',
-      source: 'Inventario HELIOS',
-      critical: true,
-      status: 'cargado_verificado',
-      applies: true,
-      qtyRequired: 2,
-      qtyAvailable: 2,
-    }),
-    base({
-      id: `${missionId}-comms`,
-      category: 'comunicacion',
-      title: 'Canal de asistencia',
-      description: 'Procedimiento de enlace Tierra / demora.',
-      source: 'Medical Operations 6.0 (referencia)',
-      critical: false,
-      status: 'disponible',
-      applies: true,
-      qtyRequired: null,
-      qtyAvailable: null,
-    }),
-    base({
-      id: `${missionId}-wellbeing`,
-      category: 'bienestar',
-      title: 'Recursos de descanso',
-      description: 'Materiales no clínicos de bienestar.',
-      source: 'Planificación HELIOS',
-      critical: false,
-      status: 'cargado_verificado',
-      applies: true,
-      qtyRequired: null,
-      qtyAvailable: null,
-    }),
-    base({
-      id: `${missionId}-eva`,
-      category: 'entrenamiento',
-      title: 'Briefing EVA de demostración',
-      description: 'Contexto técnico; no umbral clínico automático.',
-      source: 'Documentos EVA adjuntos (revisión)',
-      critical: false,
-      status: 'pendiente_revision',
-      applies: true,
-      qtyRequired: null,
-      qtyAvailable: null,
-    }),
-  ]
+    qtyRequired: item.qtyRequired,
+    qtyAvailable: null,
+    critical: item.critical,
+    status: 'pendiente_revision' as const,
+    evidence: '',
+    verifiedBy: null,
+    verifiedAt: null,
+    applies: true,
+    updatedAt: at,
+  }))
 }
 
 export function nid(): string {

@@ -17,14 +17,25 @@ export class SimulationController {
     this.platform.assertMissionAccess(profile, missionId);
   }
 
+  private aligned(sid: string, heliosSession?: string, missionId?: string) {
+    const snapshot = this.simulations.get(session(sid));
+    if (!missionId) return snapshot;
+    const profile = this.platform.requireSession(heliosSession);
+    return this.simulations.alignWithPlatform(
+      session(sid),
+      this.platform.simulatorContext(profile, missionId),
+    );
+  }
+
   @Post() initialize(
     @Headers('x-simulation-id') sid: string,
     @Headers('x-helios-session') heliosSession: string | undefined,
     @Headers('x-helios-mission') missionId: string | undefined,
     @Body() body: unknown,
   ) {
-    this.guardMission(heliosSession, missionId);
-    return this.simulations.initialize(session(sid), body);
+    this.guardMission(heliosSession, missionId)
+    this.simulations.initialize(session(sid), body);
+    return this.aligned(sid, heliosSession, missionId);
   }
 
   @Get() get(
@@ -32,8 +43,8 @@ export class SimulationController {
     @Headers('x-helios-session') heliosSession: string | undefined,
     @Headers('x-helios-mission') missionId: string | undefined,
   ) {
-    this.guardMission(heliosSession, missionId);
-    return this.simulations.get(session(sid));
+    this.guardMission(heliosSession, missionId)
+    return this.aligned(sid, heliosSession, missionId);
   }
 
   @Post('actions') action(
