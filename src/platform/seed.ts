@@ -31,6 +31,7 @@ export function emptyDb(): PlatformDb {
     reviewReports: [],
     evidenceSources: [],
     protocols: [],
+    userMemories: [],
   }
 }
 

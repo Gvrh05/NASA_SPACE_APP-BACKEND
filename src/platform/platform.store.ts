@@ -1,4 +1,4 @@
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { basename, dirname, resolve } from 'node:path'
 import { ensureUpcomingCareAppointments, installDemoScenarios, DEMO_MISSIONS } from './demoScenarios'
 import { emptyDb, seedPlatform } from './seed'
@@ -20,6 +20,7 @@ export type StorageStatus = {
 
 export class PlatformStore {
   private path: string
+  private filesDir: string
   private db: PlatformDb
   private revision = 0
   private remoteError: string | null = null
@@ -29,7 +30,61 @@ export class PlatformStore {
   constructor(dataDir?: string) {
     const root = dataDir || process.env.SIMULATION_DATA_DIR || './data/sessions'
     this.path = resolve(root, 'platform-db.json')
+    this.filesDir = resolve(root, 'memories')
+    if (!existsSync(this.filesDir)) {
+      try {
+        mkdirSync(this.filesDir, { recursive: true })
+      } catch {
+        /* ignore */
+      }
+    }
     this.db = this.load()
+  }
+
+  private getProfileFilesDir(profileId: string): string {
+    const safeProfile = basename(profileId).replace(/[^a-zA-Z0-9_-]/g, '_')
+    const userDir = resolve(this.filesDir, safeProfile)
+    if (!existsSync(userDir)) {
+      mkdirSync(userDir, { recursive: true })
+    }
+    return userDir
+  }
+
+  saveMemoryFile(profileId: string, fileId: string, buffer: Buffer): void {
+    const userDir = this.getProfileFilesDir(profileId)
+    const safeName = basename(fileId)
+    writeFileSync(resolve(userDir, safeName), buffer)
+  }
+
+  getMemoryFile(profileId: string, fileId: string): Buffer | null {
+    const userDir = this.getProfileFilesDir(profileId)
+    const safeName = basename(fileId)
+    const filePath = resolve(userDir, safeName)
+    if (existsSync(filePath)) return readFileSync(filePath)
+    const fallbackPath = resolve(this.filesDir, safeName)
+    if (existsSync(fallbackPath)) return readFileSync(fallbackPath)
+    return null
+  }
+
+  deleteMemoryFile(profileId: string, fileId: string): void {
+    const userDir = this.getProfileFilesDir(profileId)
+    const safeName = basename(fileId)
+    const filePath = resolve(userDir, safeName)
+    if (existsSync(filePath)) {
+      try {
+        unlinkSync(filePath)
+      } catch {
+        /* ignore */
+      }
+    }
+    const fallbackPath = resolve(this.filesDir, safeName)
+    if (existsSync(fallbackPath)) {
+      try {
+        unlinkSync(fallbackPath)
+      } catch {
+        /* ignore */
+      }
+    }
   }
 
   get(): PlatformDb {
@@ -183,6 +238,7 @@ export class PlatformStore {
     if (!Array.isArray(merged.inventoryMovements)) merged.inventoryMovements = []
     if (!Array.isArray(merged.missionAlerts)) merged.missionAlerts = []
     if (!Array.isArray(merged.reviewReports)) merged.reviewReports = []
+    if (!Array.isArray(merged.userMemories)) merged.userMemories = []
     let persist = (raw.version ?? 0) !== VERSION
     const needsDemo = (raw.version ?? 0) < VERSION
       || !merged.missions.some((mission) => mission.id === DEMO_MISSIONS.horizon)

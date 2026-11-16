@@ -1,4 +1,5 @@
-import { Body, Controller, Get, Headers, Param, Post, Query } from '@nestjs/common'
+import { Body, Controller, Delete, Get, Headers, Param, Post, Put, Query, Res } from '@nestjs/common'
+import type { Response } from 'express'
 import { PlatformService } from './platform.service'
 import { careApprovalSchema, careStartSchema } from '../ai/care.contract'
 import { BadRequestException } from '@nestjs/common'
@@ -370,5 +371,57 @@ export class PlatformController {
   @Post('storage/restore')
   restore(@Headers('x-helios-session') token?: string, @Body() body?: { file?: string }) {
     return this.platform.restoreDamaged(this.profile(token), body?.file || '')
+  }
+
+  // --- Memories ---
+  @Get('memories')
+  memoriesList(@Headers('x-helios-session') token?: string) {
+    return { items: this.platform.listMemories(this.profile(token)) }
+  }
+
+  @Post('memories')
+  memoryCreate(
+    @Headers('x-helios-session') token?: string,
+    @Body() body?: { title?: string; message?: string; imageBase64?: string | null; imageContentType?: string | null },
+  ) {
+    return this.platform.createMemory(this.profile(token), {
+      title: body?.title || '',
+      message: body?.message || '',
+      imageBase64: body?.imageBase64,
+      imageContentType: body?.imageContentType,
+    })
+  }
+
+  @Get('memories/:id')
+  memoryGet(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.getMemory(this.profile(token), id || '')
+  }
+
+  @Put('memories/:id')
+  memoryUpdate(
+    @Headers('x-helios-session') token?: string,
+    @Param('id') id?: string,
+    @Body() body?: { title?: string; message?: string; imageBase64?: string | null; imageContentType?: string | null; removeImage?: boolean },
+  ) {
+    return this.platform.updateMemory(this.profile(token), id || '', body || {})
+  }
+
+  @Delete('memories/:id')
+  memoryDelete(@Headers('x-helios-session') token?: string, @Param('id') id?: string) {
+    return this.platform.deleteMemory(this.profile(token), id || '')
+  }
+
+  @Get('memories/:id/image')
+  memoryImage(
+    @Headers('x-helios-session') token: string | undefined,
+    @Param('id') id: string,
+    @Res() res: Response,
+  ) {
+    const { buffer, contentType } = this.platform.getMemoryImage(this.profile(token), id)
+    res.setHeader('Content-Type', contentType)
+    res.setHeader('Cache-Control', 'private, no-cache, no-store, must-revalidate')
+    res.setHeader('Pragma', 'no-cache')
+    res.setHeader('Expires', '0')
+    res.send(buffer)
   }
 }

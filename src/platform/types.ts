@@ -455,6 +455,17 @@ export type Protocol = {
   createdAt: number
 }
 
+export type UserMemory = {
+  id: string
+  profileId: string
+  title: string
+  message: string
+  imageFileId: string | null
+  imageContentType: string | null
+  createdAt: number
+  updatedAt: number
+}
+
 export type PlatformDb = {
   profiles: Profile[]
   sessions: DemoSession[]
@@ -480,4 +491,5 @@ export type PlatformDb = {
   reviewReports: ReviewReport[]
   evidenceSources: EvidenceSource[]
   protocols: Protocol[]
+  userMemories: UserMemory[]
 }
