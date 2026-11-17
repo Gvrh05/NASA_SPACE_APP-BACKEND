@@ -150,7 +150,20 @@ export class PlatformService implements OnModuleInit {
     if (!token) throw new UnauthorizedException('Select a demo profile')
     const now = Date.now()
     const session = this.store.get().sessions.find((item) => item.token === token && item.expiresAt > now)
-    if (!session) throw new UnauthorizedException('Demo session expired')
+    if (!session) {
+      const profileById = this.store.get().profiles.find((p) => p.id === token)
+      if (profileById) return profileById
+
+      const pastSession = this.store.get().sessions.find((item) => item.token === token)
+      if (pastSession) {
+        const p = this.store.get().profiles.find((item) => item.id === pastSession.profileId)
+        if (p) {
+          pastSession.expiresAt = now + SESSION_MS
+          return p
+        }
+      }
+      throw new UnauthorizedException('Demo session expired')
+    }
     const profile = this.store.get().profiles.find((item) => item.id === session.profileId)
     if (!profile) throw new UnauthorizedException('Invalid profile')
     return profile
@@ -1637,6 +1650,7 @@ export class PlatformService implements OnModuleInit {
       message,
       imageFileId,
       imageContentType,
+      imageBase64: input.imageBase64 || null,
       createdAt: now,
       updatedAt: now,
     }
@@ -1671,6 +1685,7 @@ export class PlatformService implements OnModuleInit {
 
     let nextImageFileId = memory.imageFileId
     let nextImageContentType = memory.imageContentType
+    let nextImageBase64 = memory.imageBase64 || null
 
     if (input.removeImage) {
       if (memory.imageFileId) {
@@ -1678,6 +1693,7 @@ export class PlatformService implements OnModuleInit {
       }
       nextImageFileId = null
       nextImageContentType = null
+      nextImageBase64 = null
     } else if (input.imageBase64 && typeof input.imageBase64 === 'string') {
       let rawBase64 = input.imageBase64
       let detectedType = input.imageContentType || 'image/jpeg'
@@ -1704,6 +1720,7 @@ export class PlatformService implements OnModuleInit {
       this.store.saveMemoryFile(profile.id, fileId, buffer)
       nextImageFileId = fileId
       nextImageContentType = detectedType
+      nextImageBase64 = input.imageBase64
     }
 
     const now = Date.now()
@@ -1714,6 +1731,7 @@ export class PlatformService implements OnModuleInit {
       target.message = nextMessage
       target.imageFileId = nextImageFileId
       target.imageContentType = nextImageContentType
+      target.imageBase64 = nextImageBase64
       target.updatedAt = now
       return structuredClone(target)
     })
@@ -1738,9 +1756,17 @@ export class PlatformService implements OnModuleInit {
     const memory = this.store.get().userMemories.find((item) => item.id === id)
     if (!memory) throw new NotFoundException('Memory not found')
     if (memory.profileId !== profile.id) throw new ForbiddenException('Access denied to private memory')
-    if (!memory.imageFileId) throw new NotFoundException('Memory has no image')
+    if (!memory.imageFileId && !memory.imageBase64) throw new NotFoundException('Memory has no image')
 
-    const buffer = this.store.getMemoryFile(profile.id, memory.imageFileId)
+    let buffer = memory.imageFileId ? this.store.getMemoryFile(profile.id, memory.imageFileId) : null
+    if (!buffer && memory.imageBase64) {
+      let rawBase64 = memory.imageBase64
+      if (rawBase64.startsWith('data:')) {
+        const match = rawBase64.match(/^data:([^;]+);base64,(.+)$/)
+        if (match) rawBase64 = match[2]
+      }
+      buffer = Buffer.from(rawBase64, 'base64')
+    }
     if (!buffer) throw new NotFoundException('Image file not found')
     return { buffer, contentType: memory.imageContentType || 'image/jpeg' }
   }

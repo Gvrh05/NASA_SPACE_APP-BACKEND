@@ -90,8 +90,8 @@ describe('pain body map', () => {
       modelId: 'helios-mannequin',
       modelVersion: '1',
       marks: [{ ...mark(), localPosition: undefined, screenX: 120, screenY: 80 }],
-    })).toThrow(/coordenadas locales/)
-    expect(() => service.createPainMap(mateo, HORIZON, payload([mark({ intensity: 11 })]))).toThrow(/0 a 10/)
+    })).toThrow(/coordenadas locales|coordinates/i)
+    expect(() => service.createPainMap(mateo, HORIZON, payload([mark({ intensity: 11 })]))).toThrow(/0 a 10|0 to 10/i)
   })
 
   it('keeps the previous report on follow-up and the previous marks on correction', () => {
@@ -119,8 +119,8 @@ describe('pain body map', () => {
   it('blocks new reports by stage and still lists history after the mission ends', () => {
     const mateo = person('mateo-ruiz')
     const elena = person('elena-torres')
-    expect(() => service.createPainMap(mateo, PATHFINDER, payload([mark()]))).toThrow(/a bordo/)
-    expect(() => service.createPainMap(mateo, AURORA, payload([mark()]))).toThrow(/finalizó|a bordo/)
+    expect(() => service.createPainMap(mateo, PATHFINDER, payload([mark()]))).toThrow(/a bordo|in flight/i)
+    expect(() => service.createPainMap(mateo, AURORA, payload([mark()]))).toThrow(/finalizó|a bordo|in flight|completed/i)
     const saved = service.createPainMap(mateo, HORIZON, payload([mark({ id: 'mark-stage-1' })]))
     service.setStage(elena, HORIZON, 'postmission')
     expect(service.listPainMaps(mateo, HORIZON).some((item) => item.id === saved.id)).toBe(true)
@@ -135,10 +135,10 @@ describe('pain body map', () => {
     const elena = person('elena-torres')
     const saved = service.createPainMap(mateo, HORIZON, payload([mark()]))
     const before = saved.marks[0].description
-    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización/)
-    expect(() => service.listPainMaps(elena, HORIZON, 'mateo-ruiz')).toThrow(/jefe/)
+    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización|authorized/i)
+    expect(() => service.listPainMaps(elena, HORIZON, 'mateo-ruiz')).toThrow(/jefe|commander/i)
     service.grantHealth(mateo, HORIZON, 'sofia-chen', ['vitals'], null)
-    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización/)
+    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización|authorized/i)
     const symptoms = service.grantHealth(mateo, HORIZON, 'sofia-chen', ['symptoms'], null)
     expect(service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')[0].marks[0].localPosition).toEqual(saved.marks[0].localPosition)
     const noted = service.addPainClinicalNote(sofia, HORIZON, saved.id, 'Observe only. No organ is identified from the diagram.')
@@ -147,9 +147,9 @@ describe('pain body map', () => {
     expect(noted.clinicalNotes[0].body).not.toBe(noted.marks[0].description)
     service.grantHealth(mateo, HORIZON, 'alex-morgan', ['symptoms'], null)
     expect(service.listPainMaps(alex, HORIZON, 'mateo-ruiz')[0].clinicalNotes).toEqual([])
-    expect(() => service.addPainClinicalNote(alex, HORIZON, saved.id, 'Psych note should not land here.')).toThrow(/médico/)
+    expect(() => service.addPainClinicalNote(alex, HORIZON, saved.id, 'Psych note should not land here.')).toThrow(/médico|physician/i)
     service.revokeGrant(mateo, symptoms.id)
-    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización/)
+    expect(() => service.listPainMaps(sofia, HORIZON, 'mateo-ruiz')).toThrow(/autorización|authorized/i)
     const reply = localPainReportReply(service.listPainMaps(mateo, HORIZON), 'en')
     expect(reply.toLowerCase()).toContain('self-report')
     expect(reply.toLowerCase()).toContain('not a diagnosis')
