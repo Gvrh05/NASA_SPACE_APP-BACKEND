@@ -5,8 +5,8 @@ import { emptyDb, seedPlatform } from './seed'
 import { platformRemoteEnabled, pullPlatformSnapshot, pushPlatformSnapshot } from './platform.remote'
 import type { PlatformDb } from './types'
 
-/** v5: four stage demos (draft, preflight, in flight, completed). */
-const VERSION = 5
+/** v6: full biomedical indicator suites (cardio, respiratory, sleep, glucose, temp, mood, pain). */
+const VERSION = 6
 
 type FileShape = { version: number; revision?: number; db: PlatformDb }
 

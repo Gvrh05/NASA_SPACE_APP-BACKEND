@@ -1,4 +1,4 @@
-﻿import type { NestExpressApplication } from '@nestjs/platform-express';
+import type { NestExpressApplication } from '@nestjs/platform-express';
 import type { IncomingMessage } from 'node:http';
 import { runInLocale } from '../simulation/locale';
 import type { Request, Response, NextFunction } from 'express';
@@ -24,7 +24,10 @@ export function configureHttp(app: NestExpressApplication) {
   app.useBodyParser('json', {
     limit: '10mb',
     inflate: false,
-    type: (req) => isJson(req) && path(req) === '/api/simulation',
+    type: (req) =>
+      isJson(req) &&
+      (path(req) === '/api/simulation' ||
+        /^\/api\/platform\/memories(?:\/|$)/.test(path(req))),
   });
   app.useBodyParser('json', {
     limit: '256kb',
@@ -32,6 +35,7 @@ export function configureHttp(app: NestExpressApplication) {
     type: (req) =>
       isJson(req) &&
       !/^\/api\/ai(?:\/|$)/.test(path(req)) &&
-      path(req) !== '/api/simulation',
+      path(req) !== '/api/simulation' &&
+      !/^\/api\/platform\/memories(?:\/|$)/.test(path(req)),
   });
 }
