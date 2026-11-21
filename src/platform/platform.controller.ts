@@ -319,6 +319,15 @@ export class PlatformController {
     return this.platform.rescheduleAppointment(this.profile(token), appointmentId || '', Number(body?.scheduledAt))
   }
 
+  @Post('appointments/:appointmentId/request-reschedule')
+  appointmentRequestReschedule(
+    @Headers('x-helios-session') token?: string,
+    @Param('appointmentId') appointmentId?: string,
+    @Body() body?: { note?: string },
+  ) {
+    return this.platform.requestPatientReschedule(this.profile(token), appointmentId || '', body?.note)
+  }
+
   @Post('appointments/:appointmentId/cancel')
   appointmentCancel(
     @Headers('x-helios-session') token?: string,

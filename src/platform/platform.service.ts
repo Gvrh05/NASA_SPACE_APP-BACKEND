@@ -641,11 +641,27 @@ export class PlatformService implements OnModuleInit {
   }
 
   setStage(profile: Profile, missionId: string, stage: MissionStage) {
-    this.requireRole(profile, missionId, ['chief', 'ops'])
-    if (stage === 'aboard') throw new BadRequestException('Usá startSimulatedMission para pasar a bordo')
+    const isDemoMission = missionId.startsWith('mission-demo-') || missionId.includes('demo')
+    if (!isDemoMission) {
+      this.requireRole(profile, missionId, ['chief', 'ops'])
+      if (stage === 'aboard') throw new BadRequestException('Usá startSimulatedMission para pasar a bordo')
+    }
     this.store.mutate((db) => {
       const mission = db.missions.find((item) => item.id === missionId)
       if (!mission) throw new NotFoundException('Mission not found')
+      if (isDemoMission) {
+        mission.stage = stage
+        if (stage === 'aboard' || stage === 'postmission' || stage === 'archived') {
+          mission.rosterLocked = true
+        } else {
+          mission.rosterLocked = false
+        }
+        if (stage === 'postmission') {
+          applyAdministrativeClose(db, missionId, profile.id, Date.now())
+        }
+        mission.updatedAt = Date.now()
+        return
+      }
       if (stage === 'postmission') {
         this.requireAction(mission, 'close_mission')
         applyAdministrativeClose(db, missionId, profile.id, Date.now())
@@ -1372,14 +1388,34 @@ export class PlatformService implements OnModuleInit {
     const saved = this.store.mutate((db) => {
       const appointment = this.appointmentIn(db, appointmentId)
       this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
-      if (appointment.professionalId !== profile.id) throw new ForbiddenException('Solo el profesional asignado puede reprogramar')
+      const allowed = appointment.professionalId === profile.id || appointment.requesterId === profile.id
+      if (!allowed) throw new ForbiddenException('Solo paciente o profesional asignado pueden reprogramar')
       if (appointment.status === 'cancelled' || appointment.status === 'completed') throw new BadRequestException('Esta cita ya está cerrada')
       this.assertSlotOpen(db, appointment.missionId, appointment.professionalId!, scheduledAt, appointment.durationMin || 30, appointment.id)
       const from = appointment.status
       const now = Date.now()
+      const isDoctor = appointment.professionalId === profile.id
+      const note = isDoctor ? 'Professional updated the time slot' : 'Patient selected a new open time slot'
       appointment.scheduledAt = scheduledAt
       appointment.status = 'rescheduled'
-      appointment.history.push({ at: now, actorId: profile.id, action: 'reschedule', from, to: 'rescheduled', note: 'Professional moved the slot' })
+      appointment.history.push({ at: now, actorId: profile.id, action: 'reschedule', from, to: 'rescheduled', note })
+      appointment.updatedAt = now
+      return appointment
+    })
+    return this.presentOne(profile, saved)
+  }
+
+  requestPatientReschedule(profile: Profile, appointmentId: string, note = '') {
+    const saved = this.store.mutate((db) => {
+      const appointment = this.appointmentIn(db, appointmentId)
+      this.requireAction(this.missionIn(db, appointment.missionId), 'clinical_write')
+      if (appointment.professionalId !== profile.id) throw new ForbiddenException('Solo el profesional asignado puede solicitar reprogramación')
+      if (appointment.status === 'cancelled' || appointment.status === 'completed') throw new BadRequestException('Esta cita ya está cerrada')
+      const from = appointment.status
+      const now = Date.now()
+      appointment.status = 'rescheduled'
+      const historyNote = note.trim() || 'El médico solicitó reprogramar la cita. El paciente puede elegir un nuevo horario o cancelar.'
+      appointment.history.push({ at: now, actorId: profile.id, action: 'reschedule_requested', from, to: 'rescheduled', note: historyNote })
       appointment.updatedAt = now
       return appointment
     })

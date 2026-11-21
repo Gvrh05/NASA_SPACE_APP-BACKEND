@@ -92,7 +92,7 @@ describe('specialized Gemini conversations, permissions and explicit sharing', (
     expect(JSON.stringify(seen[0])).not.toContain('LONGITUDINAL-HEADACHE');
   });
   it('withholds history and stored symptoms unless separately authorized', async () => {
-    platform.addSymptom(owner, mission, { description: 'PRIVATE-SYMPTOM', startedAt: null, intensity: 1, context: 'self', source: 'self_report' });
+    platform.addSymptom(owner, mission, { description: 'PRIVATE-SYMPTOM', startedAt: null, intensity: 1, context: 'self', source: 'self_report', bodyRegion: 'general' });
     const c = platform.startConversation(owner, mission, 'physical');
     platform.postConversationMessage(owner, c.id, 'PRIVATE-PAST');
     await service().message(owner, c.id, { text: 'Hello', ai: { ...options, historyConsent: false } }, signal());

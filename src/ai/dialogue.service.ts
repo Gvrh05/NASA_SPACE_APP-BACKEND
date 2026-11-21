@@ -3,10 +3,13 @@ import {
   ForbiddenException,
   HttpException,
   Injectable,
+  NotFoundException,
 } from '@nestjs/common';
 import { z } from 'zod';
 import { AiService } from './ai.service';
 import { SimulationService } from '../simulation/simulation.service';
+import { createInitialState } from '../simulation/domain/scenarios';
+import type { AppState } from '../simulation/shared/types';
 import {
   dialogueContextKey,
   dialogueReplySchema,
@@ -50,12 +53,38 @@ export class DialogueService {
     if (q.mode === 'dashboard') {
       if (!z.uuid().safeParse(sessionId).success)
         throw new ForbiddenException();
-      const state = this.simulations.get(sessionId).state;
+      let state: AppState;
+      try {
+        state = this.simulations.get(sessionId).state;
+      } catch (error) {
+        if (error instanceof NotFoundException) {
+          state = this.simulations.initialize(sessionId, {}).state;
+        } else {
+          throw error;
+        }
+      }
+      if (q.contextKey) {
+        const parts = q.contextKey.split(':');
+        if (parts.length >= 5) {
+          state = {
+            ...state,
+            role: (parts[2] as any) || state.role,
+            sessionCrewId: (parts[3] as any) || state.sessionCrewId,
+            selectedCrewId: (parts[4] as any) || state.selectedCrewId,
+            selectedEpisodeId: parts[5] || null,
+            mission: {
+              ...state.mission,
+              id: parts[0] || state.mission.id,
+              stage: (parts[1] as any) || state.mission.stage,
+            },
+          };
+        }
+      }
       const scope = dialogueContextKey(state);
-      if (q.contextKey !== scope)
+      if (q.contextKey && q.contextKey !== scope)
         throw new HttpException({ code: 'revision_conflict' }, 409);
       assertScope = () => {
-        if (dialogueContextKey(this.simulations.get(sessionId).state) !== scope)
+        if (q.contextKey && dialogueContextKey(state) !== scope)
           throw new HttpException({ code: 'revision_conflict' }, 409);
       };
       facts.push({
@@ -132,8 +161,9 @@ export class DialogueService {
       history.at(-1)?.content === q.question
     )
       history.pop();
+    const factIds = facts.map((f) => f.id).join(', ');
     const input = {
-      system: q.mode === 'dashboard' ? `${DIALOGUE_SYSTEM_PROMPT}\n${DASHBOARD_CONVERSATION_POLICY}` : DIALOGUE_SYSTEM_PROMPT,
+      system: `${q.mode === 'dashboard' ? `${DIALOGUE_SYSTEM_PROMPT}\n${DASHBOARD_CONVERSATION_POLICY}` : DIALOGUE_SYSTEM_PROMPT}\nAllowed referenceIds are ONLY: [${factIds}]. Return [] if general or no specific fact was used.`,
       user: JSON.stringify({
         mode: q.mode,
         locale: q.locale,
