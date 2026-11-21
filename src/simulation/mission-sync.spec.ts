@@ -69,6 +69,7 @@ describe('platform and simulator mission context', () => {
       intensity: 2,
       context: 'self',
       source: 'self_report',
+      bodyRegion: 'general',
     })
     expect(platform.listSymptoms(mateo, 'mission-demo-horizon').some((item) => item.description === 'ROLE-PRIVATE')).toBe(true)
     for (const id of ['elena-torres', 'sofia-chen', 'alex-morgan']) {
